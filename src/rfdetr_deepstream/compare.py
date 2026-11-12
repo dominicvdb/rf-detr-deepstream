@@ -53,6 +53,27 @@ class ParityStats:
         self.unmatched_a_scores += [float(score_a[i]) for i in range(len(xyxy_a)) if i not in ma]
         self.unmatched_b_scores += [float(score_b[j]) for j in range(len(xyxy_b)) if j not in mb]
 
+    def summary(self, threshold: float | None = None) -> dict:
+        ious, ds = np.array(self.ious), np.array(self.dscore)
+        absd = np.abs(ds)
+        out = {
+            "n_a": self.n_a,
+            "n_b": self.n_b,
+            "matched": len(ious),
+            "match_rate": len(ious) / max(self.n_a, 1),
+            "iou_mean": float(ious.mean()) if len(ious) else None,
+            "iou_p5": float(np.percentile(ious, 5)) if len(ious) else None,
+            "dscore_mean": float(absd.mean()) if len(ds) else None,
+            "dscore_p95": float(np.percentile(absd, 95)) if len(ds) else None,
+            "dscore_max": float(absd.max()) if len(ds) else None,
+            "only_a": len(self.unmatched_a_scores),
+            "only_b": len(self.unmatched_b_scores),
+        }
+        if threshold is not None:
+            unmatched = np.array(self.unmatched_a_scores + self.unmatched_b_scores)
+            out["unmatched_near_threshold"] = float(np.mean(unmatched < threshold + 0.05)) if len(unmatched) else None
+        return out
+
     def report(self, name_a: str = "A", name_b: str = "B", threshold: float | None = None) -> str:
         ious, ds = np.array(self.ious), np.array(self.dscore)
         absd = np.abs(ds)

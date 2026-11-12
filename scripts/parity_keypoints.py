@@ -2,10 +2,11 @@
 
 Prerequisite: a DeepStream run with customlib-props="dump-dir:<dir>" on the same video.
 
-    python scripts/parity_keypoints.py [--video data/sample_walk.mov] [--dump data/kp_out/dump]
+    python scripts/parity_keypoints.py [--video data/sample_walk.mov] [--dump data/kp_out/dump] [--json OUT]
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import cv2
@@ -14,6 +15,7 @@ import onnxruntime as ort
 from PIL import Image
 
 from rfdetr_deepstream.compare import ParityStats, match
+from rfdetr_deepstream.dumps import pose_dump_path, read_pose_dump
 from rfdetr_deepstream.reference import run_onnx_keypoints
 
 parser = argparse.ArgumentParser()
@@ -22,21 +24,9 @@ parser.add_argument("--dump", default="data/kp_out/dump")
 parser.add_argument("--onnx", default="models/keypoint/rfdetr-keypoint-preview_folded.onnx")
 parser.add_argument("--threshold", type=float, default=0.5)
 parser.add_argument("--frames", type=int, default=0)
+parser.add_argument("--json", type=Path, help="write the summary as JSON")
 args = parser.parse_args()
 SCHEMA = [0, 17]
-
-
-def read_dump(path: Path):
-    xyxy, cls, conf, kps = [], [], [], []
-    for line in path.read_text().splitlines():
-        v = line.split()
-        cls.append(int(v[0]))
-        conf.append(float(v[1]))
-        xyxy.append([float(x) for x in v[2:6]])
-        n = int(v[6])
-        kps.append(np.array([float(x) for x in v[7 : 7 + 3 * n]]).reshape(n, 3))
-    return np.array(xyxy).reshape(-1, 4), np.array(cls, dtype=int), np.array(conf), kps
-
 
 session = ort.InferenceSession(args.onnx, providers=["CPUExecutionProvider"])
 cap = cv2.VideoCapture(args.video)
@@ -48,7 +38,7 @@ while True:
         break
     image = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
     ref = run_onnx_keypoints(session, image, SCHEMA, threshold=args.threshold)
-    ds_xyxy, ds_cls, ds_conf, ds_kps = read_dump(Path(args.dump) / f"00_{frame:06d}.txt")
+    ds_xyxy, ds_cls, ds_conf, ds_kps = read_pose_dump(pose_dump_path(args.dump, frame))
     stats.add(ref.xyxy, ref.class_id, ref.confidence, ds_xyxy, ds_cls, ds_conf)
     for i, j, _ in match(ref.xyxy, ref.class_id, ds_xyxy, ds_cls):
         n = len(ds_kps[j])
@@ -57,10 +47,17 @@ while True:
             kp_dconf.append(np.abs(ref.keypoints[i, :n, 2] - ds_kps[j][:, 2]))
     frame += 1
 
-d = np.concatenate(kp_dist)
-c = np.concatenate(kp_dconf)
+d = np.concatenate(kp_dist) if kp_dist else np.zeros(0)
+c = np.concatenate(kp_dconf) if kp_dconf else np.zeros(0)
 print(f"Frames compared: {frame}  (threshold {args.threshold})")
 print(stats.report("python", "deepstream", threshold=args.threshold))
-print(f"keypoint distance (px): mean={d.mean():.3f}  median={np.median(d):.3f}  p95={np.percentile(d, 95):.3f}  "
-      f"max={d.max():.2f}   ({len(d)} keypoints)")
-print(f"keypoint |dconf|:       mean={c.mean():.4f}  p95={np.percentile(c, 95):.4f}  max={c.max():.4f}")
+if len(d):
+    print(f"keypoint distance (px): mean={d.mean():.3f}  median={np.median(d):.3f}  p95={np.percentile(d, 95):.3f}  "
+          f"max={d.max():.2f}   ({len(d)} keypoints)")
+    print(f"keypoint |dconf|:       mean={c.mean():.4f}  p95={np.percentile(c, 95):.4f}  max={c.max():.4f}")
+if args.json:
+    summary = {"frames": frame, **stats.summary(args.threshold)}
+    if len(d):
+        summary.update(kp_dist_mean=float(d.mean()), kp_dist_median=float(np.median(d)),
+                       kp_dist_p95=float(np.percentile(d, 95)), kp_dconf_mean=float(c.mean()))
+    args.json.write_text(json.dumps(summary, indent=2))

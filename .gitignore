@@ -16,3 +16,6 @@ ref/
 
 # Test data
 data/
+
+# Per-version test output (engines, libraries, dumps)
+build/
