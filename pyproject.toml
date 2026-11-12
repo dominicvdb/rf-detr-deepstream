@@ -1,20 +1,22 @@
 [project]
 name = "rfdetr-deepstream"
-version = "0.0.1"
+version = "0.1.0"
 description = "Run RF-DETR models in NVIDIA DeepStream: model-to-bundle tool and nvinfer parser"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
-    "pillow",
-    "onnxruntime",
+    "onnx",
 ]
 
 [project.optional-dependencies]
-# Needed for exporting from .pth and for bit-exact preprocessing (torchvision resize).
+# Needed to build from a pretrained name or a .pth checkpoint (exports to ONNX with rfdetr).
 torch = ["rfdetr[onnx]", "torch", "torchvision"]
-# Parity tests and development scripts (video decoding).
-dev = ["opencv-python-headless"]
+# Parity tests and development scripts.
+dev = ["rfdetr[onnx]", "torch", "torchvision", "onnxruntime", "pillow", "opencv-python-headless"]
+
+[project.scripts]
+rfdetr-deepstream = "rfdetr_deepstream.cli:main"
 
 [build-system]
 requires = ["hatchling"]

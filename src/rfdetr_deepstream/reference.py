@@ -5,15 +5,18 @@ This is the specification the C++ DeepStream parser has to match. It mirrors rfd
   - decoding:       rfdetr/export/_runtime/decode.py      (decode_detections)
                     rfdetr/export/_topk.py                (_select_topk_multiclass)
 
-The decoder is written step by step on purpose: every numbered step below becomes a block of C++ later.
+The decoder steps are numbered; the C++ parser (parser/nvdsparsebbox_rfdetr.cpp) uses the same numbers.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
-from PIL import Image
+
+if TYPE_CHECKING:  # only for type hints: Pillow is not needed to build bundles
+    from PIL import Image
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
