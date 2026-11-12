@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser(
         "build",
         help="build a DeepStream bundle (ONNX, labels, nvinfer config, parser source) from an RF-DETR model",
-        description="Build a DeepStream bundle from an RF-DETR detection model.",
+        description="Build a DeepStream bundle from an RF-DETR detection or keypoint model.",
     )
     b.add_argument("model", help=f"pretrained name ({', '.join(PRETRAINED)}), a checkpoint (.pth/.ckpt), or an .onnx")
     b.add_argument("-o", "--output", type=Path, required=True, help="output folder for the bundle")
@@ -40,8 +40,17 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--threshold", type=float, default=0.5, help="detection threshold (default 0.5)")
     b.add_argument("--precision", choices=["fp32", "fp16"], default="fp32", help="TensorRT precision (default fp32)")
     b.add_argument("--parser-lib", type=Path, metavar="PATH",
-                   help="use an already built parser library instead of shipping the parser source")
+                   help="detection: use an already built parser library instead of shipping the parser source")
+    b.add_argument("--keypoints-per-class", type=_int_list, metavar="N,N,..",
+                   help="keypoint .onnx only: keypoint count per class slot (default 0,17 for the official model)")
     return parser
+
+
+def _int_list(value: str) -> list[int]:
+    try:
+        return [int(v) for v in value.split(",") if v.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected comma-separated integers, got {value!r}") from None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
                 threshold=args.threshold,
                 precision=args.precision,
                 parser_lib=args.parser_lib,
+                keypoints_per_class=args.keypoints_per_class,
             )
         except BundleError as e:
             print(f"error: {e}", file=sys.stderr)

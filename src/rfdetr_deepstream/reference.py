@@ -107,6 +107,107 @@ def decode(
     return Detections(xyxy=xyxy, confidence=confidence, class_id=class_id, query=query)
 
 
+# --------------------------------------------------------------------------------------------------
+# Keypoint models (RFDETRKeypointPreview). Mirrors rfdetr 1.12.1 models/postprocess.py (_postprocess_keypoints,
+# _apply_keypoint_trace_fusion, _keypoint_log_mean_trace) and the threshold filter in _prediction/core.py.
+# --------------------------------------------------------------------------------------------------
+@dataclass
+class KeypointDetections(Detections):
+    keypoints: np.ndarray = None  # (N, K, 3) float32: x, y in ORIGINAL image pixels, confidence (sigmoid findable)
+
+
+def _logsumexp(x: np.ndarray, axis: int) -> np.ndarray:
+    m = np.max(x, axis=axis, keepdims=True)
+    return (m + np.log(np.sum(np.exp(x - m), axis=axis, keepdims=True))).squeeze(axis)
+
+
+def keypoint_log_mean_trace(kp: np.ndarray) -> float:
+    """kp: (K, D) raw keypoint predictions of one detection's class. Log of the findability-weighted mean trace
+    of the covariance implied by the precision-Cholesky parameters (columns 4:7)."""
+    kp = kp.astype(np.float32)
+    log_l11, l21, log_l22 = kp[:, 4], kp[:, 5], kp[:, 6]
+    w_find = 1.0 / (1.0 + np.exp(-kp[:, 2]))
+    log_t1 = -2.0 * log_l11
+    log_t2 = -2.0 * log_l22
+    log_t3 = 2.0 * np.log(np.maximum(np.abs(l21), 1e-12)) + log_t1 + log_t2
+    log_trace = _logsumexp(np.stack([log_t1, log_t2, log_t3], axis=-1), axis=-1)
+    log_w = np.log(np.maximum(w_find, 1e-12))
+    return float(_logsumexp(log_trace + log_w, axis=0) - _logsumexp(log_w, axis=0))
+
+
+def decode_keypoints(
+    dets: np.ndarray,
+    labels: np.ndarray,
+    keypoints: np.ndarray,
+    image_width: int,
+    image_height: int,
+    num_keypoints_per_class: list[int],
+    threshold: float = 0.5,
+    trace_alpha: float = 0.2,
+    num_select: int | None = None,
+) -> KeypointDetections:
+    """Decode ONE image's raw keypoint-model outputs.
+
+    Args:
+        dets:      (Q, 4) normalised cx, cy, w, h
+        labels:    (Q, C) raw logits; C = len(num_keypoints_per_class)
+        keypoints: (Q, C * Kmax, D) raw keypoints, padded per class slot; D >= 7
+        num_keypoints_per_class: e.g. [0, 17] (background-first: slot 0 has no keypoints)
+    """
+    num_queries, num_classes = labels.shape
+    kmax = max(num_keypoints_per_class)
+    d = keypoints.shape[-1]
+    kp_by_class = keypoints.reshape(num_queries, num_classes, kmax, d)
+
+    # Steps 1-4 as in decode(): sigmoid per slot (background included), top-k pairs, no threshold yet.
+    scores = 1.0 / (1.0 + np.exp(-np.clip(labels.astype(np.float32), -88.0, 88.0)))
+    flat = scores.reshape(-1)
+    k = num_queries if num_select is None else num_select
+    order = np.argsort(-flat, kind="stable")[:k]
+    query, class_id, score = order // num_classes, order % num_classes, flat[order]
+
+    # Step 7: keypoints of the predicted class, and score fusion with keypoint uncertainty.
+    fused = score.copy()
+    out_kp = np.zeros((len(order), kmax, 3), dtype=np.float32)
+    max_score = np.nextafter(np.float32(1.0), np.float32(0.0))
+    for i, (q, c) in enumerate(zip(query, class_id)):
+        if c >= len(num_keypoints_per_class):
+            continue
+        n = num_keypoints_per_class[c]
+        log_mean_trace = 0.0
+        if n > 0:
+            a = kp_by_class[q, c, :n]
+            out_kp[i, :n, 0] = a[:, 0] * image_width
+            out_kp[i, :n, 1] = a[:, 1] * image_height
+            out_kp[i, :n, 2] = 1.0 / (1.0 + np.exp(-a[:, 2]))
+            if trace_alpha > 0 and d >= 7:
+                log_mean_trace = keypoint_log_mean_trace(a)
+        if trace_alpha > 0 and d >= 7:
+            z = np.log(score[i]) - trace_alpha * log_mean_trace
+            fused[i] = min(np.float32(1.0 / (1.0 + np.exp(-z))), max_score)
+
+    # Step 5 (moved): threshold on the FUSED score, as predict() does.
+    keep = fused > threshold
+    query, class_id, fused, out_kp = query[keep], class_id[keep], fused[keep], out_kp[keep]
+
+    # Step 6: boxes to pixel corners.
+    cx, cy, w, h = dets[query].astype(np.float32).T
+    xyxy = np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], axis=1)
+    scale = np.array([image_width, image_height, image_width, image_height], dtype=np.float32)
+    xyxy = np.clip(xyxy * scale, 0.0, scale)
+    return KeypointDetections(xyxy=xyxy, confidence=fused.astype(np.float32), class_id=class_id, query=query,
+                              keypoints=out_kp)
+
+
+def run_onnx_keypoints(session, image: Image.Image, num_keypoints_per_class, **decode_kwargs) -> KeypointDetections:
+    inp = session.get_inputs()[0]
+    _, _, height, width = inp.shape
+    names = [o.name for o in session.get_outputs()]
+    out = dict(zip(names, session.run(None, {inp.name: preprocess(image, height, width)})))
+    return decode_keypoints(out["dets"][0], out["labels"][0], out["keypoints"][0], image.width, image.height,
+                            num_keypoints_per_class, **decode_kwargs)
+
+
 def run_onnx(session, image: Image.Image, **decode_kwargs) -> Detections:
     """Full reference pipeline on one image with an onnxruntime InferenceSession."""
     inp = session.get_inputs()[0]

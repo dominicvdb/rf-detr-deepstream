@@ -24,6 +24,18 @@ from rfdetr_deepstream.reference import IMAGENET_MEAN, IMAGENET_STD
 NEW_INPUT = "image"
 
 
+def fold_constants(onnx_in: Path, onnx_out: Path) -> None:
+    """Pre-compute every subgraph that doesn't depend on the input (ONNX Runtime basic optimisations, standard
+    ONNX ops only). Needed for the keypoint model on TensorRT 8.6, which fails on the constant
+    keypoint_query_initializer subgraph ("Could not find any implementation for node ForeignNode[...]")."""
+    import onnxruntime as ort
+
+    options = ort.SessionOptions()
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+    options.optimized_model_filepath = str(onnx_out)
+    ort.InferenceSession(str(onnx_in), options, providers=["CPUExecutionProvider"])
+
+
 def add_preprocessing(
     onnx_in: Path,
     onnx_out: Path,

@@ -1,14 +1,17 @@
 # rfdetr-deepstream
 
-Run [RF-DETR](https://github.com/roboflow/rf-detr) detection models in NVIDIA DeepStream, with detections that match RF-DETR's own `predict()`.
+Run [RF-DETR](https://github.com/roboflow/rf-detr) detection and keypoint (pose) models in NVIDIA DeepStream, with results that match RF-DETR's own `predict()`.
 
 ```bash
 rfdetr-deepstream build nano --frame-size 1280x720 -o bundle/
 make -C bundle/parser        # once, on the target (DeepStream container or Jetson)
 # then use bundle/config_infer_rfdetr.txt as the nvinfer config-file-path
+
+rfdetr-deepstream build keypoint --frame-size 1920x1080 -o pose_bundle/
+make -C pose_bundle/pose     # see pose_bundle/README.txt for the pipeline
 ```
 
-## Results
+## Results: detection
 
 RF-DETR Nano, FP32, DeepStream 7.0 (TensorRT 8.6), RTX 4060 under WSL2. 720p sample video, 1442 frames, compared per frame with the Python reference pipeline (which matches `RFDETR.predict()`):
 
@@ -25,6 +28,23 @@ Why nvinfer's own preprocessing falls short:
 
 With `--frame-size`, the ONNX takes the full RGB frame and does the resize and normalization itself (exactly like torchvision). nvinfer runs with `scaling-filter=0`, which at scale 1 copies pixels unchanged.
 
+## Results: keypoints (RF-DETR KeypointPreview)
+
+The official `RFDETRKeypointPreview` checkpoint (COCO person, 17 keypoints, 576×576, XLarge backbone), FP32, same setup. `sample_walk.mov` (1920×1080, 288 frames):
+
+| Comparison | Matched people | Mean box IoU | Keypoint distance | Mean \|Δscore\| |
+|---|---|---|---|---|
+| Same input tensor (DeepStream's), TF32 on | 96.7% | 0.9995 | mean 0.06 px | 0.0031 |
+| **Same input tensor, TF32 off** | **100%** | **1.0000** | **mean 0.0014 px** | **0.0001** |
+| End to end (video → detections), TF32 off | 97.6% | 0.9949 | median 0.25 px, mean 0.58 px | 0.0105 |
+
+~31 FPS end to end (TF32 off, including decode and encode); TensorRT compute 27.6 ms/frame with TF32, 33.7 ms without.
+
+How it works and what was needed:
+- **TensorRT 8.6 can't build the exported model**: `Could not find any implementation for node {ForeignNode[transformer.keypoint_query_initializer...]}`. That subgraph doesn't depend on the image, so the CLI constant-folds it (ONNX Runtime), after which TensorRT 8.6 builds it. The folded model gives bit-identical outputs.
+- nvinfer can't return keypoints from a parse function, so it only attaches the raw tensors (`network-type=100`, `output-tensor-meta=1`). `libnvds_rfdetr_pose.so`, an [nvdsvideotemplate](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_plugin_gst-nvdsvideotemplate.html) custom library, decodes them like `predict()`, including RF-DETR's keypoint-uncertainty score fusion. It attaches standard `NvDsObjectMeta`, keypoints as object user meta (`pose/nvds_rfdetr_keypoints_meta.h`), and skeleton display meta for `nvdsosd`.
+- **TF32**, which TensorRT enables by default on Ampere and newer, measurably changes the fused scores. Building the engine with `NVIDIA_TF32_OVERRIDE=0` gives an exact match, at ~20% lower throughput.
+
 ## Install
 
 ```bash
@@ -40,9 +60,11 @@ rfdetr-deepstream build MODEL -o OUT_DIR [--frame-size WxH] [--class-names FILE 
 ```
 
 `MODEL` can be:
-- a pretrained name: `nano`, `small`, `medium`, `large`, `base`
-- an RF-DETR checkpoint (`.pth` / `.ckpt`), including fine-tuned models. Class names and the class layout come from the checkpoint.
-- an ONNX export (`.onnx`). Pass `--class-names` (one per line) or `--coco` for the official COCO weights.
+- a pretrained name: `nano`, `small`, `medium`, `large`, `base`, `keypoint`
+- an RF-DETR checkpoint (`.pth` / `.ckpt`), including fine-tuned models. Class names, the class layout and (for keypoint models) the keypoint schema come from the checkpoint.
+- an ONNX export (`.onnx`). Detection: pass `--class-names` (one per line) or `--coco` for the official COCO weights. Keypoints: `--keypoints-per-class` (default `0,17`, the official model) and optionally `--class-names`.
+
+Keypoint models are detected automatically. Their bundle has `pose/` instead of `parser/`, and its README.txt contains the exact `nvdsvideotemplate` pipeline.
 
 `--frame-size` should match `nvstreammux` `width`/`height`. The engine is then tied to that resolution. Without it, nvinfer approximates the preprocessing (see Results).
 
@@ -60,10 +82,12 @@ TensorRT engines aren't portable between GPUs or TensorRT versions, so nvinfer b
 
 ## Supported
 
-- Detection models (Nano, Small, Medium, Large, Base, and fine-tuned checkpoints). Segmentation and keypoints are not supported yet.
+- Detection models (Nano, Small, Medium, Large, Base, and fine-tuned checkpoints).
+- Keypoint models (`RFDETRKeypointPreview`, and fine-tuned keypoint checkpoints via their schema). Only the official checkpoint has been tested.
+- Segmentation is not supported yet.
 - FP32. FP16 works, but some transformer layers overflow and degrade detections (fix planned: keep those layers in FP32).
 - Tested on DeepStream 7.0 (x86, dGPU).
 
 ## Development
 
-`scripts/` has the parity tests (`parity_deepstream.py`, `check_reference.py`, `check_onnx_patch.py`) and the diagnostics used to find the preprocessing differences (`debug_*.py`).
+`scripts/` has the parity tests (`parity_deepstream.py`, `parity_keypoints.py`, `check_reference.py`, `check_keypoint_reference.py`, `check_onnx_patch.py`) and the diagnostics used to find the preprocessing differences (`debug_*.py`).
