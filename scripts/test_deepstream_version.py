@@ -142,8 +142,10 @@ def pose_pipeline(video: str, width: int, height: int, config: str, lib: str, du
                   output_mp4: str | None, max_frames: int | None = None) -> str:
     limit = f"identity eos-after={max_frames + 1} ! " if max_frames else ""
     props = " ".join(f'customlib-props="{p}"' for p in POSE_PROPS + [f"dump-dir:{dump_dir}"])
-    tail = (f"nvvideoconvert ! nvdsosd ! nvvideoconvert ! nvv4l2h264enc bitrate=8000000 ! h264parse ! qtmux ! "
-            f"filesink location={output_mp4}" if output_mp4 else "fakesink")
+    # Explicit I420 before the encoder (as deepstream-app does): the negotiated NV12 path hangs on DS 8.0 at 1080p.
+    tail = (f"nvvideoconvert ! nvdsosd ! nvvideoconvert ! 'video/x-raw(memory:NVMM),format=I420' ! "
+            f"nvv4l2h264enc bitrate=8000000 ! h264parse ! qtmux ! filesink location={output_mp4}"
+            if output_mp4 else "fakesink")
     return (f"gst-launch-1.0 filesrc location={video} ! qtdemux ! h264parse ! nvv4l2decoder ! {limit}m.sink_0 "
             f"nvstreammux name=m batch-size=1 width={width} height={height} ! nvinfer config-file-path={config} ! "
             f"nvdsvideotemplate customlib-name={lib} {props} ! {tail}")
@@ -165,7 +167,10 @@ def main() -> int:
     build.mkdir(parents=True, exist_ok=True)
     w = f"/work/build/{args.tag}"
     run = Runner(args.image, build)
-    results: dict = {"tag": args.tag, "image": args.image, "date": time.strftime("%Y-%m-%d")}
+    results_path = ROOT / "results" / f"{args.tag}.json"
+    # With --skip, keep the earlier results of the skipped steps.
+    results: dict = (load_json(results_path) or {}) if args.skip else {}
+    results.update({"tag": args.tag, "image": args.image, "date": time.strftime("%Y-%m-%d")})
 
     # ---- Versions -------------------------------------------------------------------------------------------
     step("versions")

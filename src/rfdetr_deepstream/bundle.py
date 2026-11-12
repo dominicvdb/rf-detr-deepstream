@@ -301,6 +301,11 @@ def _pose_props(layout: ClassLayout, threshold: float) -> list[str]:
     return props
 
 
+_ENCODE_TAIL = ("nvvideoconvert ! 'video/x-raw(memory:NVMM),format=I420' ! nvv4l2h264enc ! h264parse ! qtmux ! "
+                "filesink location=out.mp4")
+_ENCODE_NOTE = """   Keep the explicit format=I420 before nvv4l2h264enc (as deepstream-app does): on DeepStream 8.0 the
+   negotiated NV12 path hangs at 1920x1080."""
+
 _ENGINE_NOTE = """nvinfer builds a TensorRT engine from the ONNX on first run (this takes a while) and caches it next to it
 as {onnx}_b1_gpu0_<precision>.engine. Engines only work on the GPU and TensorRT version that built them,
 so never copy them between machines."""
@@ -326,9 +331,10 @@ Files
      gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! nvv4l2decoder ! m.sink_0 \\
        nvstreammux name=m batch-size=1 width=W height=H ! \\
        nvinfer config-file-path=config_infer_rfdetr.txt ! nvvideoconvert ! nvdsosd ! \\
-       nvvideoconvert ! nvv4l2h264enc ! h264parse ! qtmux ! filesink location=out.mp4
+       {_ENCODE_TAIL}
 
    {mux}
+{_ENCODE_NOTE}
 
 Detection threshold: pre-cluster-threshold in config_infer_rfdetr.txt ([class-attrs-all], or per class
 in [class-attrs-<id>]).
@@ -364,9 +370,11 @@ TF32 (the TensorRT default on Ampere and newer) noticeably changes the keypoint-
        nvinfer config-file-path=config_infer_rfdetr.txt ! \\
        nvdsvideotemplate customlib-name=pose/{POSE_LIB_NAME} \\
        {props_args} ! \\
-       nvvideoconvert ! nvdsosd ! nvvideoconvert ! nvv4l2h264enc ! h264parse ! qtmux ! filesink location=out.mp4
+       nvvideoconvert ! nvdsosd ! \\
+       {_ENCODE_TAIL}
 
    {mux}
+{_ENCODE_NOTE}
 
 Other customlib-props: keypoint-threshold:<float> (minimum confidence to draw a keypoint, default 0.5),
 draw:0 (no display meta), gie-id:<int> (default 1), dump-dir:<path> (one text file per frame).

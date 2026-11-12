@@ -1,0 +1,114 @@
+{
+  "tag": "ds8.0",
+  "image": "nvcr.io/nvidia/deepstream:8.0-triton-multiarch",
+  "date": "2026-11-12",
+  "deepstream": "8.0.0",
+  "tensorrt": "10.9",
+  "cuda_runtime": "12.8",
+  "cuda_driver": "13.4",
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "build": {
+    "parser": {
+      "ok": true,
+      "warnings": 0
+    },
+    "pose": {
+      "ok": true,
+      "warnings": 0
+    }
+  },
+  "unfolded_keypoint_onnx_builds": true,
+  "det_fps": 147.07,
+  "det_run_ok": true,
+  "det_parity": {
+    "frames": 1442,
+    "n_a": 13465,
+    "n_b": 13458,
+    "matched": 13361,
+    "match_rate": 0.9922762718158188,
+    "iou_mean": 0.9946161165034026,
+    "iou_p5": 0.985607983498746,
+    "dscore_mean": 0.002863898750442506,
+    "dscore_p95": 0.009999249935150112,
+    "dscore_max": 0.2800893334693909,
+    "only_a": 104,
+    "only_b": 97,
+    "unmatched_near_threshold": 0.9253731343283582
+  },
+  "det_same_input": {
+    "frames": 99,
+    "n_a": 1019,
+    "n_b": 1019,
+    "matched": 1019,
+    "match_rate": 1.0,
+    "iou_mean": 0.9999840060356212,
+    "iou_p5": 0.9999483084126708,
+    "dscore_mean": 1.4386328741192126e-05,
+    "dscore_p95": 2.805423622129765e-05,
+    "dscore_max": 0.0029956746292114644,
+    "only_a": 0,
+    "only_b": 0,
+    "unmatched_near_threshold": null
+  },
+  "scaler": {
+    "frames": 30,
+    "mean_abs_diff_rgb": [
+      0.4560000002384186,
+      0.9380000233650208,
+      0.3400000035762787
+    ],
+    "mean_signed_diff_rgb": [
+      0.4560000002384186,
+      0.9380000233650208,
+      0.3400000035762787
+    ],
+    "p99_abs_diff": 2.0,
+    "shift_mean_abs_diff": {
+      "+0,+0": 0.5779286623001099,
+      "+0,+1": 3.398825168609619,
+      "+0,-1": 3.388824939727783,
+      "+1,+0": 4.198383808135986,
+      "-1,+0": 4.222980499267578
+    },
+    "best_shift": "+0,+0",
+    "unchanged": true
+  },
+  "kp_run_ok": true,
+  "kp_fps": 31.344170332156885,
+  "kp_parity": {
+    "frames": 288,
+    "n_a": 247,
+    "n_b": 254,
+    "matched": 241,
+    "match_rate": 0.9757085020242915,
+    "iou_mean": 0.9947928049854955,
+    "iou_p5": 0.9831298001981047,
+    "dscore_mean": 0.011015007378716687,
+    "dscore_p95": 0.05541957793045049,
+    "dscore_max": 0.20961909309005733,
+    "only_a": 6,
+    "only_b": 13,
+    "unmatched_near_threshold": 0.3157894736842105,
+    "kp_dist_mean": 0.5766518292102147,
+    "kp_dist_median": 0.25388417659185514,
+    "kp_dist_p95": 1.7974288463412267,
+    "kp_dconf_mean": 0.0031407892261280214
+  },
+  "kp_same_input": {
+    "frames": 100,
+    "n_a": 61,
+    "n_b": 61,
+    "matched": 61,
+    "match_rate": 1.0,
+    "iou_mean": 0.9999880045057862,
+    "iou_p5": 0.9999289012398042,
+    "dscore_mean": 1.2711936262787194e-05,
+    "dscore_p95": 4.8260719299308974e-05,
+    "dscore_max": 0.00022622333526611804,
+    "only_a": 0,
+    "only_b": 0,
+    "unmatched_near_threshold": null,
+    "kp_dist_mean": 0.0007338299027604915,
+    "kp_dist_max": 0.031668014893355786
+  }
+}
