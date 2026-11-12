@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Large or downloaded artifacts
+models/
+ref/
+*.engine
+*.mp4
+*.pth
+
+# C++ build output
+*.o
+*.so
+
+# Test data
+data/
