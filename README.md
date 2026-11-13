@@ -49,17 +49,19 @@ How it works and what was needed:
 
 The same source works on every tested version, without code changes. Measured with `scripts/test_deepstream_version.py` (x86, RTX 4060, WSL2, FP32, TF32 off); full numbers in [`results/`](results/).
 
-| | DeepStream 7.0 (TensorRT 8.6) | DeepStream 8.0 (TensorRT 10.9) | DeepStream 9.0 (TensorRT 10.14) |
-|---|---|---|---|
-| Parser and pose library build | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings |
-| Detection, end to end | 99.2% match, IoU 0.9946, 138 FPS | 99.2% match, IoU 0.9946, 147 FPS | 99.2% match, IoU 0.9946, 152 FPS |
-| Detection, same input tensor | 100%, IoU 0.99998 | 100%, IoU 0.99998 | 100%, IoU 0.99998 |
-| nvinfer passes the frame unchanged (`scaling-filter=0`) | ✅ | ✅ | ✅ |
-| Keypoints, end to end | 97.6%, median 0.25 px, 30 FPS | 97.6%, median 0.25 px, 31 FPS | 97.6%, median 0.25 px, 31 FPS |
-| Keypoints, same input tensor | 100%, 0.0014 px | 100%, 0.0007 px | 100%, 0.0007 px |
-| Unfolded keypoint ONNX builds | ❌ (constant folding needed) | ✅ | ✅ |
+| | DeepStream 7.0 (TensorRT 8.6) | DeepStream 8.0 (TensorRT 10.9) | DeepStream 9.0 (TensorRT 10.14) | DeepStream 9.2 (TensorRT 10.16) |
+|---|---|---|---|---|
+| Parser and pose library build | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings |
+| Detection, end to end | 99.2% match, IoU 0.9946, 138 FPS | 99.2% match, IoU 0.9946, 147 FPS | 99.2% match, IoU 0.9946, 152 FPS | 99.2% match, IoU 0.9946, 130 FPS¹ |
+| Detection, same input tensor | 100%, IoU 0.99998 | 100%, IoU 0.99998 | 100%, IoU 0.99998 | 100%, IoU 0.99998 |
+| nvinfer passes the frame unchanged (`scaling-filter=0`) | ✅ | ✅ | ✅ | ✅ |
+| Keypoints, end to end | 97.6%, median 0.25 px, 30 FPS | 97.6%, median 0.25 px, 31 FPS | 97.6%, median 0.25 px, 31 FPS | 97.6%, median 0.25 px, 27 FPS¹ |
+| Keypoints, same input tensor | 100%, 0.0014 px | 100%, 0.0007 px | 100%, 0.0007 px | 100%, 0.0007 px |
+| Unfolded keypoint ONNX builds | ❌ (constant folding needed) | ✅ | ✅ | ✅ |
 
-Planned: 9.2, then 7.1, plus arm64 (Jetson) compile checks.
+¹ Pipeline throughput on 9.2 is about 20% lower than on 9.0 (repeated alternating runs: ~128 vs ~160 FPS detection). The TensorRT engine itself is not slower: `trtexec` gives the same GPU compute time on both (median 5.2 ms). The difference is in the DeepStream 9.2 pipeline, not in the parser or the model.
+
+Planned: 7.1, plus arm64 (Jetson) compile checks.
 
 **Encoding to a file:** keep an explicit `nvvideoconvert ! 'video/x-raw(memory:NVMM),format=I420' ! nvv4l2h264enc` (as deepstream-app does, and as the generated bundle READMEs show). On DeepStream 8.0 the negotiated NV12 path into the encoder hangs at 1920×1080. I420 and NV12 carry the same 4:2:0 data, so there's no quality or measurable speed cost.
 
@@ -104,7 +106,7 @@ TensorRT engines aren't portable between GPUs or TensorRT versions, so nvinfer b
 - Keypoint models (`RFDETRKeypointPreview`, and fine-tuned keypoint checkpoints via their schema). Only the official checkpoint has been tested.
 - Segmentation is not supported yet.
 - FP32. FP16 works, but some transformer layers overflow and degrade detections (fix planned: keep those layers in FP32).
-- Tested on DeepStream 7.0, 8.0 and 9.0 (x86, dGPU). Jetson not tested yet.
+- Tested on DeepStream 7.0, 8.0, 9.0 and 9.2 (x86, dGPU). Jetson not tested yet.
 
 ## Development
 
