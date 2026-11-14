@@ -1,7 +1,7 @@
 {
   "tag": "ds7.0",
   "image": "nvcr.io/nvidia/deepstream:7.0-triton-multiarch",
-  "date": "2026-11-12",
+  "date": "2026-11-13",
   "deepstream": "7.0.0",
   "tensorrt": "8.6",
   "cuda_runtime": "12.2",
@@ -74,25 +74,25 @@
     "unchanged": true
   },
   "kp_run_ok": true,
-  "kp_fps": 30.380616096014027,
+  "kp_fps": 32.1013502331498,
   "kp_parity": {
     "frames": 288,
     "n_a": 247,
     "n_b": 253,
     "matched": 241,
     "match_rate": 0.9757085020242915,
-    "iou_mean": 0.9949096001745872,
+    "iou_mean": 0.9949094185450116,
     "iou_p5": 0.9835961242365237,
-    "dscore_mean": 0.010475011785625916,
+    "dscore_mean": 0.010474920499318861,
     "dscore_p95": 0.05513557793045043,
-    "dscore_max": 0.20961309309005738,
+    "dscore_max": 0.2096140930900574,
     "only_a": 6,
     "only_b": 12,
     "unmatched_near_threshold": 0.3888888888888889,
-    "kp_dist_mean": 0.5752120463685352,
+    "kp_dist_mean": 0.5752143580718645,
     "kp_dist_median": 0.25264387822806283,
     "kp_dist_p95": 1.8106104003731938,
-    "kp_dconf_mean": 0.003130569232289046
+    "kp_dconf_mean": 0.0031307205625306853
   },
   "kp_same_input": {
     "frames": 100,
@@ -100,15 +100,15 @@
     "n_b": 60,
     "matched": 60,
     "match_rate": 1.0,
-    "iou_mean": 0.9999844795821448,
-    "iou_p5": 0.9999485321151458,
-    "dscore_mean": 5.363484764099869e-05,
-    "dscore_p95": 7.835264625546352e-05,
-    "dscore_max": 0.002219046142578174,
+    "iou_mean": 0.9999852633119457,
+    "iou_p5": 0.9999800719270069,
+    "dscore_mean": 5.27387598673527e-05,
+    "dscore_p95": 7.665264625545914e-05,
+    "dscore_max": 0.0022200461425780915,
     "only_a": 0,
     "only_b": 0,
     "unmatched_near_threshold": null,
-    "kp_dist_mean": 0.0014132842997326125,
+    "kp_dist_mean": 0.0013581072405935836,
     "kp_dist_max": 0.2439931215373106
   }
 }

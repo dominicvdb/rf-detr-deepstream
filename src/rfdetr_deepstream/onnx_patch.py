@@ -1,6 +1,6 @@
 """Build RF-DETR's preprocessing into the ONNX graph, so DeepStream doesn't have to approximate it.
 
-nvinfer's own preprocessing differs from RFDETR.predict() in three ways (measured, see docs):
+nvinfer's own preprocessing differs from RFDETR.predict() in three ways (measured with scripts/debug_*.py):
   1. its scaler uses a different pixel-center convention than torchvision (boxes shift ~half a pixel),
   2. it has one scale for all channels, while ImageNet normalisation needs one std per channel,
   3. its bilinear filter is not documented to match torchvision's.
@@ -34,6 +34,36 @@ def fold_constants(onnx_in: Path, onnx_out: Path) -> None:
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
     options.optimized_model_filepath = str(onnx_out)
     ort.InferenceSession(str(onnx_in), options, providers=["CPUExecutionProvider"])
+    _undo_ort_rewrites(onnx_out)
+
+
+def _undo_ort_rewrites(path: Path) -> None:
+    """ONNX Runtime writes default attribute values explicitly and lists every opset domain it knows. TensorRT 10.3
+    (DeepStream 7.1) rejects ScatterND with an explicit reduction="none", so drop attributes that equal their
+    schema default and opset imports no node uses. Same semantics as before."""
+    model = onnx.load(str(path))
+    versions = {o.domain: o.version for o in model.opset_import}
+    for node in model.graph.node:
+        try:
+            schema = onnx.defs.get_schema(node.op_type, versions.get(node.domain, 1), node.domain)
+        except onnx.defs.SchemaError:
+            continue
+        keep = []
+        for attr in node.attribute:
+            spec = schema.attributes.get(attr.name)
+            default = spec.default_value if spec is not None else None
+            if (default is not None and default.type != onnx.AttributeProto.UNDEFINED
+                    and helper.get_attribute_value(attr) == helper.get_attribute_value(default)):
+                continue
+            keep.append(attr)
+        del node.attribute[:]
+        node.attribute.extend(keep)
+    used = {node.domain for node in model.graph.node} | {""}
+    kept = [o for o in model.opset_import if o.domain in used]
+    del model.opset_import[:]
+    model.opset_import.extend(kept)
+    onnx.checker.check_model(model)
+    onnx.save(model, str(path))
 
 
 def add_preprocessing(

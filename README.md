@@ -41,7 +41,7 @@ The official `RFDETRKeypointPreview` checkpoint (COCO person, 17 keypoints, 576�
 ~31 FPS end to end (TF32 off, including decode and encode); TensorRT compute 27.6 ms/frame with TF32, 33.7 ms without.
 
 How it works and what was needed:
-- **TensorRT 8.6 can't build the exported model**: `Could not find any implementation for node {ForeignNode[transformer.keypoint_query_initializer...]}`. That subgraph doesn't depend on the image, so the CLI constant-folds it (ONNX Runtime), after which TensorRT 8.6 builds it. The folded model gives bit-identical outputs. TensorRT 10.9 (DeepStream 8.0) builds the unfolded model too; the CLI folds anyway, so one bundle works on every version.
+- **TensorRT 8.6 can't build the exported model**: `Could not find any implementation for node {ForeignNode[transformer.keypoint_query_initializer...]}`. That subgraph doesn't depend on the image, so the CLI constant-folds it (ONNX Runtime), after which TensorRT 8.6 builds it. The folded model gives bit-identical outputs. TensorRT 10.3 and later (DeepStream 7.1+) build the unfolded model too; the CLI folds anyway, so one bundle works on every version. ONNX Runtime writes default attributes out explicitly when it saves the folded model, e.g. `reduction="none"` on ScatterND, which TensorRT 10.3 rejects (`Attribute reduction is not supported`), so the CLI removes attributes that equal their default afterwards.
 - nvinfer can't return keypoints from a parse function, so it only attaches the raw tensors (`network-type=100`, `output-tensor-meta=1`). `libnvds_rfdetr_pose.so`, an [nvdsvideotemplate](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_plugin_gst-nvdsvideotemplate.html) custom library, decodes them like `predict()`, including RF-DETR's keypoint-uncertainty score fusion. It attaches standard `NvDsObjectMeta`, keypoints as object user meta (`pose/nvds_rfdetr_keypoints_meta.h`), and skeleton display meta for `nvdsosd`.
 - **TF32**, which TensorRT enables by default on Ampere and newer, measurably changes the fused scores. Building the engine with `NVIDIA_TF32_OVERRIDE=0` gives an exact match, at ~20% lower throughput.
 
@@ -49,19 +49,19 @@ How it works and what was needed:
 
 The same source works on every tested version, without code changes. Measured with `scripts/test_deepstream_version.py` (x86, RTX 4060, WSL2, FP32, TF32 off); full numbers in [`results/`](results/).
 
-| | DeepStream 7.0 (TensorRT 8.6) | DeepStream 8.0 (TensorRT 10.9) | DeepStream 9.0 (TensorRT 10.14) | DeepStream 9.2 (TensorRT 10.16) |
-|---|---|---|---|---|
-| Parser and pose library build | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings |
-| Detection, end to end | 99.2% match, IoU 0.9946, 138 FPS | 99.2% match, IoU 0.9946, 147 FPS | 99.2% match, IoU 0.9946, 152 FPS | 99.2% match, IoU 0.9946, 130 FPS¹ |
-| Detection, same input tensor | 100%, IoU 0.99998 | 100%, IoU 0.99998 | 100%, IoU 0.99998 | 100%, IoU 0.99998 |
-| nvinfer passes the frame unchanged (`scaling-filter=0`) | ✅ | ✅ | ✅ | ✅ |
-| Keypoints, end to end | 97.6%, median 0.25 px, 30 FPS | 97.6%, median 0.25 px, 31 FPS | 97.6%, median 0.25 px, 31 FPS | 97.6%, median 0.25 px, 27 FPS¹ |
-| Keypoints, same input tensor | 100%, 0.0014 px | 100%, 0.0007 px | 100%, 0.0007 px | 100%, 0.0007 px |
-| Unfolded keypoint ONNX builds | ❌ (constant folding needed) | ✅ | ✅ | ✅ |
+| | DeepStream 7.0 (TensorRT 8.6) | DeepStream 7.1 (TensorRT 10.3) | DeepStream 8.0 (TensorRT 10.9) | DeepStream 9.0 (TensorRT 10.14) | DeepStream 9.2 (TensorRT 10.16) |
+|---|---|---|---|---|---|
+| Parser and pose library build | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings |
+| Detection, end to end | 99.2% match, IoU 0.9946, 138 FPS | 99.2% match, IoU 0.9946, 157 FPS | 99.2% match, IoU 0.9946, 147 FPS | 99.2% match, IoU 0.9946, 152 FPS | 99.2% match, IoU 0.9946, 130 FPS¹ |
+| Detection, same input tensor | 100%, IoU 0.99998 | 100%, IoU 0.99999 | 100%, IoU 0.99998 | 100%, IoU 0.99998 | 100%, IoU 0.99998 |
+| nvinfer passes the frame unchanged (`scaling-filter=0`) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Keypoints, end to end | 97.6%, median 0.25 px, 32 FPS | 97.6%, median 0.25 px, 33 FPS | 97.6%, median 0.25 px, 31 FPS | 97.6%, median 0.25 px, 31 FPS | 97.6%, median 0.25 px, 27 FPS¹ |
+| Keypoints, same input tensor | 100%, 0.0014 px | 100%, 0.0014 px | 100%, 0.0007 px | 100%, 0.0007 px | 100%, 0.0007 px |
+| Unfolded keypoint ONNX builds | ❌ (constant folding needed) | ✅ | ✅ | ✅ | ✅ |
 
 ¹ Pipeline throughput on 9.2 is about 20% lower than on 9.0 (repeated alternating runs: ~128 vs ~160 FPS detection). The TensorRT engine itself is not slower: `trtexec` gives the same GPU compute time on both (median 5.2 ms). The difference is in the DeepStream 9.2 pipeline, not in the parser or the model.
 
-Planned: 7.1, plus arm64 (Jetson) compile checks.
+Planned: arm64 (Jetson) compile checks.
 
 **Encoding to a file:** keep an explicit `nvvideoconvert ! 'video/x-raw(memory:NVMM),format=I420' ! nvv4l2h264enc` (as deepstream-app does, and as the generated bundle READMEs show). On DeepStream 8.0 the negotiated NV12 path into the encoder hangs at 1920×1080. I420 and NV12 carry the same 4:2:0 data, so there's no quality or measurable speed cost.
 
@@ -106,7 +106,7 @@ TensorRT engines aren't portable between GPUs or TensorRT versions, so nvinfer b
 - Keypoint models (`RFDETRKeypointPreview`, and fine-tuned keypoint checkpoints via their schema). Only the official checkpoint has been tested.
 - Segmentation is not supported yet.
 - FP32. FP16 works, but some transformer layers overflow and degrade detections (fix planned: keep those layers in FP32).
-- Tested on DeepStream 7.0, 8.0, 9.0 and 9.2 (x86, dGPU). Jetson not tested yet.
+- Tested on DeepStream 7.0, 7.1, 8.0, 9.0 and 9.2 (x86, dGPU). Jetson not tested yet.
 
 ## Development
 

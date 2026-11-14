@@ -74,25 +74,25 @@
     "unchanged": true
   },
   "kp_run_ok": true,
-  "kp_fps": 26.914685058345942,
+  "kp_fps": 27.274132221132202,
   "kp_parity": {
     "frames": 288,
     "n_a": 247,
     "n_b": 254,
     "matched": 241,
     "match_rate": 0.9757085020242915,
-    "iou_mean": 0.9947931349083015,
-    "iou_p5": 0.9831298001981047,
-    "dscore_mean": 0.011011953436807971,
-    "dscore_p95": 0.05542057793045041,
+    "iou_mean": 0.9947930546747816,
+    "iou_p5": 0.9831266594591855,
+    "dscore_mean": 0.011011866299878511,
+    "dscore_p95": 0.05541957793045049,
     "dscore_max": 0.20961909309005733,
     "only_a": 6,
     "only_b": 13,
     "unmatched_near_threshold": 0.3157894736842105,
-    "kp_dist_mean": 0.5766428109352192,
+    "kp_dist_mean": 0.5766422249393804,
     "kp_dist_median": 0.2537499072912379,
     "kp_dist_p95": 1.7974288463412267,
-    "kp_dconf_mean": 0.0031409616070786667
+    "kp_dconf_mean": 0.003140927776789317
   },
   "kp_same_input": {
     "frames": 100,
@@ -100,15 +100,15 @@
     "n_b": 61,
     "matched": 61,
     "match_rate": 1.0,
-    "iou_mean": 0.9999879423192469,
+    "iou_mean": 0.999987945619365,
     "iou_p5": 0.9999289012398042,
-    "dscore_mean": 1.4463810592404753e-05,
+    "dscore_mean": 1.388688866037054e-05,
     "dscore_p95": 4.8260719299308974e-05,
-    "dscore_max": 0.0002852233352661493,
+    "dscore_max": 0.00027022333526616205,
     "only_a": 0,
     "only_b": 0,
     "unmatched_near_threshold": null,
-    "kp_dist_mean": 0.0007431262322096547,
+    "kp_dist_mean": 0.0007424402737196339,
     "kp_dist_max": 0.031668014893355786
   }
 }
