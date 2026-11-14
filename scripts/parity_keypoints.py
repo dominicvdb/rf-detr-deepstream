@@ -25,6 +25,7 @@ parser.add_argument("--dump", default="data/kp_out/dump")
 parser.add_argument("--onnx", default="models/keypoint/rfdetr-keypoint-preview_folded.onnx")
 parser.add_argument("--threshold", type=float, default=0.5)
 parser.add_argument("--frames", type=int, default=0)
+parser.add_argument("--stream", type=int, default=0, help="source index in a multi-stream run (dump file prefix)")
 parser.add_argument("--json", type=Path, help="write the summary as JSON")
 args = parser.parse_args()
 SCHEMA = [0, 17]
@@ -34,7 +35,7 @@ stats = ParityStats()
 kp_dist, kp_dconf, frame = [], [], 0
 for rgb in read_frames(args.video, args.frames, args.ds_version):
     ref = run_onnx_keypoints(session, Image.fromarray(rgb), SCHEMA, threshold=args.threshold)
-    ds_xyxy, ds_cls, ds_conf, ds_kps = read_pose_dump(pose_dump_path(args.dump, frame))
+    ds_xyxy, ds_cls, ds_conf, ds_kps = read_pose_dump(pose_dump_path(args.dump, frame, args.stream))
     stats.add(ref.xyxy, ref.class_id, ref.confidence, ds_xyxy, ds_cls, ds_conf)
     for i, j, _ in match(ref.xyxy, ref.class_id, ds_xyxy, ds_cls):
         n = len(ds_kps[j])

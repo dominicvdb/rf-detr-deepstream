@@ -79,20 +79,27 @@ def add_preprocessing(
 
     old_input = graph.input[0]
     old_name = old_input.name  # "input" for RF-DETR exports
-    dims = [d.dim_value for d in old_input.type.tensor_type.shape.dim]  # [1, 3, 384, 384]
+    # [1, 3, 384, 384], or ["batch", 3, 384, 384] for a dynamic-batch export
+    dims = [d.dim_value or d.dim_param for d in old_input.type.tensor_type.shape.dim]
     batch, channels, model_h, model_w = dims
-    if 0 in dims:
-        raise ValueError(f"expected a static input shape, got {dims}")
+    if not all(isinstance(d, int) and d > 0 for d in dims[1:]) or not batch:
+        raise ValueError(f"expected an input shape [N or batch, C, H, W] with static C, H, W, got {dims}")
 
     c = lambda name, arr: numpy_helper.from_array(np.asarray(arr, dtype=np.float32), name)  # noqa: E731
     graph.initializer.extend([
         c("pre_inv255", 1.0 / 255.0),
         c("pre_mean", np.array(mean).reshape(1, channels, 1, 1)),
         c("pre_std", np.array(std).reshape(1, channels, 1, 1)),
-        numpy_helper.from_array(np.array([batch, channels, model_h, model_w], dtype=np.int64), "pre_sizes"),
+        numpy_helper.from_array(np.array([0], dtype=np.int64), "pre_zero"),
+        numpy_helper.from_array(np.array([2], dtype=np.int64), "pre_two"),
+        numpy_helper.from_array(np.array([model_h, model_w], dtype=np.int64), "pre_hw"),
     ])
 
     nodes = [
+        # Resize target [N, C, model_h, model_w], with N taken from the input so any batch size works.
+        helper.make_node("Shape", [NEW_INPUT], ["pre_in_shape"], name="pre_shape"),
+        helper.make_node("Slice", ["pre_in_shape", "pre_zero", "pre_two"], ["pre_nc"], name="pre_slice_nc"),
+        helper.make_node("Concat", ["pre_nc", "pre_hw"], ["pre_sizes"], name="pre_sizes", axis=0),
         helper.make_node("Mul", [NEW_INPUT, "pre_inv255"], ["pre_scaled"], name="pre_scale"),
         # Inputs: X, roi (unused), scales (unused, empty), sizes. half_pixel + linear = torchvision bilinear,
         # align_corners=False. Opset 17 Resize has no antialiasing, same as antialias=False.

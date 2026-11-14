@@ -24,8 +24,8 @@ def read_kitti(path: Path, label_to_id: dict[str, int]):
     return np.array(xyxy).reshape(-1, 4), np.array(cls, dtype=int), np.array(conf)
 
 
-def kitti_path(kitti_dir: Path, frame: int) -> Path:
-    return Path(kitti_dir) / f"00_000_{frame:06d}.txt"
+def kitti_path(kitti_dir: Path, frame: int, stream: int = 0) -> Path:
+    return Path(kitti_dir) / f"00_{stream:03d}_{frame:06d}.txt"
 
 
 def read_pose_dump(path: Path):
@@ -42,5 +42,5 @@ def read_pose_dump(path: Path):
     return np.array(xyxy).reshape(-1, 4), np.array(cls, dtype=int), np.array(conf), kps
 
 
-def pose_dump_path(dump_dir: Path, frame: int) -> Path:
-    return Path(dump_dir) / f"00_{frame:06d}.txt"
+def pose_dump_path(dump_dir: Path, frame: int, stream: int = 0) -> Path:
+    return Path(dump_dir) / f"{stream:02d}_{frame:06d}.txt"

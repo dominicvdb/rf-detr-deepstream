@@ -28,6 +28,7 @@ parser.add_argument("--onnx", default="models/nano/rfdetr-nano.onnx")
 parser.add_argument("--labels", default="models/nano/labels.txt")
 parser.add_argument("--threshold", type=float, default=0.5)
 parser.add_argument("--frames", type=int, default=0, help="0 = all frames")
+parser.add_argument("--stream", type=int, default=0, help="source index in a multi-stream run (KITTI file prefix)")
 parser.add_argument("--json", type=Path, help="write the summary as JSON")
 args = parser.parse_args()
 
@@ -37,7 +38,7 @@ stats = ParityStats()
 frame = 0
 for rgb in read_frames(args.video, args.frames, args.ds_version):
     ref = run_onnx(session, Image.fromarray(rgb), threshold=args.threshold)
-    ds_xyxy, ds_cls, ds_conf = read_kitti(kitti_path(args.kitti, frame), label_to_id)
+    ds_xyxy, ds_cls, ds_conf = read_kitti(kitti_path(args.kitti, frame, args.stream), label_to_id)
     stats.add(ref.xyxy, ref.class_id, ref.confidence, ds_xyxy, ds_cls, ds_conf)
     frame += 1
     if frame % 200 == 0:

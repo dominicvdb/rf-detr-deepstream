@@ -39,6 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
     names.add_argument("--coco", action="store_true", help="the .onnx is an official COCO-pretrained model")
     b.add_argument("--threshold", type=float, default=0.5, help="detection threshold (default 0.5)")
     b.add_argument("--precision", choices=["fp32", "fp16"], default="fp32", help="TensorRT precision (default fp32)")
+    b.add_argument("--batch-size", type=int, default=1, metavar="N",
+                   help="maximum number of streams per inference call (nvinfer batch-size; default 1). "
+                        "Above 1 the ONNX gets a dynamic batch dimension, unless --static-batch is given.")
+    b.add_argument("--static-batch", action="store_true",
+                   help="export with a fixed batch of --batch-size instead of a dynamic one. Needed for keypoint "
+                        "models on DeepStream 7.0 (TensorRT 8.6), which can't build them with a dynamic batch.")
     b.add_argument("--parser-lib", type=Path, metavar="PATH",
                    help="detection: use an already built parser library instead of shipping the parser source")
     b.add_argument("--keypoints-per-class", type=_int_list, metavar="N,N,..",
@@ -67,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
                 precision=args.precision,
                 parser_lib=args.parser_lib,
                 keypoints_per_class=args.keypoints_per_class,
+                batch_size=args.batch_size,
+                static_batch=args.static_batch,
             )
         except BundleError as e:
             print(f"error: {e}", file=sys.stderr)
