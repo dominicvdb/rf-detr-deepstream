@@ -13,20 +13,47 @@ make -C pose_bundle/pose     # see pose_bundle/README.txt for the pipeline
 
 ## Results: detection
 
-RF-DETR Nano, FP32, DeepStream 7.0 (TensorRT 8.6), RTX 4060 under WSL2. 720p sample video, 1442 frames, compared per frame with the Python reference pipeline (which matches `RFDETR.predict()`):
+RF-DETR Nano, FP32, DeepStream 9.2 (TensorRT 10.16), RTX 4060 under WSL2. 720p sample video, 1442 frames, compared per frame with the Python reference pipeline on the same frames (see [Exact frames](#exact-frames-video-decoding-and-colour-conversion)):
 
-| Preprocessing | Matched detections | Mean box IoU | Mean \|Δscore\| | FPS (end to end) |
-|---|---|---|---|---|
-| nvinfer's own (bilinear scaler, single-scale normalization) | 90.1% | 0.870 | 0.036 | ~146 |
-| **Built into the ONNX (`--frame-size`)** | **99.2%** | **0.9946** | **0.0028** | **~151** |
+| Preprocessing | Matched detections | Mean box IoU | Mean \|Δscore\| |
+|---|---|---|---|
+| nvinfer's own (bilinear scaler, single-scale normalization) | 90.2% | 0.869 | 0.036 |
+| **Built into the ONNX (`--frame-size`)** | **100%** (13458 of 13458) | **0.999995** | **0.0000025** |
 
-Nearly all remaining unmatched detections score within 0.05 of the threshold.
+That is as close as two runtimes get. On the first 300 frames, compared with `RFDETR.predict()` itself:
+
+| | Matched | Mean box IoU | Mean \|Δscore\| |
+|---|---|---|---|
+| `predict()` on CPU vs `predict()` on GPU (TF32 off) | 100% (+1 borderline) | 0.999995 | 4.2e-6 |
+| `predict()` on CPU vs ONNX Runtime | 100% | 0.999995 | 2.5e-6 |
+| **`predict()` on CPU vs DeepStream** | **100%** | **0.999996** | **2.7e-6** |
+
+Bit-identical outputs aren't possible between different runtimes (PyTorch CPU and GPU aren't bit-identical either): they sum in a different order, and float rounding depends on the order.
 
 Why nvinfer's own preprocessing falls short:
 - Its scaler uses a different pixel-center convention than torchvision, which shifts boxes by about half a network pixel. With bilinear filtering it **resamples even at scale 1** (a 2×2 blur plus a half-pixel shift).
 - It has one scale factor for all channels, while RF-DETR normalizes with a per-channel ImageNet std.
 
 With `--frame-size`, the ONNX takes the full RGB frame and does the resize and normalization itself (exactly like torchvision). nvinfer runs with `scaling-filter=0`, which at scale 1 copies pixels unchanged.
+
+## Exact frames: video decoding and colour conversion
+
+Comparing DeepStream with Python on a video only makes sense when both see the same pixels. H.264/H.265 decoding is bit-exact, so FFmpeg gives the same YUV planes as DeepStream's hardware decoder. The conversion to RGB is not: OpenCV's differs from nvinfer's in 53–57% of all pixel values (by 1–2 levels), which is enough to flip detections near the score threshold. Compared against OpenCV-decoded frames, the same DeepStream output looks like 99.2% (detection) and 97.6% (keypoints).
+
+nvinfer converts NV12 to RGB with BT.601 limited range and truncation, chroma repeated over 2×2 pixels:
+- DeepStream 8.0 and later: exact BT.601 coefficients.
+- DeepStream 7.x: 4-decimal coefficients in float32 (1.1644, 1.596, 0.3918, 0.813, 2.0172).
+
+`rfdetr_deepstream.video.read_frames(path, deepstream_version=...)` decodes with PyAV (`pip install av`) and applies that conversion. It matches nvinfer's input tensor dump on every pixel, on DeepStream 7.0, 7.1, 8.0, 9.0 and 9.2 (720p and 1080p H.264). Use it to feed `predict()` the frames DeepStream sees:
+
+```python
+from rfdetr import RFDETRNano
+from rfdetr_deepstream.video import read_frames
+
+model = RFDETRNano()
+for rgb in read_frames("video.mp4", deepstream_version="9.2"):
+    detections = model.predict(rgb, threshold=0.5)
+```
 
 ## Results: keypoints (RF-DETR KeypointPreview)
 
@@ -35,10 +62,10 @@ The official `RFDETRKeypointPreview` checkpoint (COCO person, 17 keypoints, 576�
 | Comparison | Matched people | Mean box IoU | Keypoint distance | Mean \|Δscore\| |
 |---|---|---|---|---|
 | Same input tensor (DeepStream's), TF32 on | 96.7% | 0.9995 | mean 0.06 px | 0.0031 |
-| **Same input tensor, TF32 off** | **100%** | **1.0000** | **mean 0.0014 px** | **0.0001** |
-| End to end (video → detections), TF32 off | 97.6% | 0.9949 | median 0.25 px, mean 0.58 px | 0.0105 |
+| Same input tensor, TF32 off | 100% | 0.99999 | mean 0.0007 px | 0.00001 |
+| **End to end (video → detections), TF32 off** | **100%** (254 of 254) | **0.99999** | **median 0.0004 px** | **0.000006** |
 
-~31 FPS end to end (TF32 off, including decode and encode); TensorRT compute 27.6 ms/frame with TF32, 33.7 ms without.
+TF32-on row measured on DeepStream 7.0, the others on 9.2. ~30 FPS end to end (TF32 off, including decode, drawing and encode); TensorRT compute 27.6 ms/frame with TF32, 33.7 ms without.
 
 How it works and what was needed:
 - **TensorRT 8.6 can't build the exported model**: `Could not find any implementation for node {ForeignNode[transformer.keypoint_query_initializer...]}`. That subgraph doesn't depend on the image, so the CLI constant-folds it (ONNX Runtime), after which TensorRT 8.6 builds it. The folded model gives bit-identical outputs. TensorRT 10.3 and later (DeepStream 7.1+) build the unfolded model too; the CLI folds anyway, so one bundle works on every version. ONNX Runtime writes default attributes out explicitly when it saves the folded model, e.g. `reduction="none"` on ScatterND, which TensorRT 10.3 rejects (`Attribute reduction is not supported`), so the CLI removes attributes that equal their default afterwards.
@@ -52,16 +79,21 @@ The same source works on every tested version, without code changes. Measured wi
 | | DeepStream 7.0 (TensorRT 8.6) | DeepStream 7.1 (TensorRT 10.3) | DeepStream 8.0 (TensorRT 10.9) | DeepStream 9.0 (TensorRT 10.14) | DeepStream 9.2 (TensorRT 10.16) |
 |---|---|---|---|---|---|
 | Parser and pose library build | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings | ✅ 0 warnings |
-| Detection, end to end | 99.2% match, IoU 0.9946, 138 FPS | 99.2% match, IoU 0.9946, 157 FPS | 99.2% match, IoU 0.9946, 147 FPS | 99.2% match, IoU 0.9946, 152 FPS | 99.2% match, IoU 0.9946, 130 FPS¹ |
-| Detection, same input tensor | 100%, IoU 0.99998 | 100%, IoU 0.99999 | 100%, IoU 0.99998 | 100%, IoU 0.99998 | 100%, IoU 0.99998 |
-| nvinfer passes the frame unchanged (`scaling-filter=0`) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Keypoints, end to end | 97.6%, median 0.25 px, 32 FPS | 97.6%, median 0.25 px, 33 FPS | 97.6%, median 0.25 px, 31 FPS | 97.6%, median 0.25 px, 31 FPS | 97.6%, median 0.25 px, 27 FPS¹ |
-| Keypoints, same input tensor | 100%, 0.0014 px | 100%, 0.0014 px | 100%, 0.0007 px | 100%, 0.0007 px | 100%, 0.0007 px |
+| Detection, end to end | 100%, IoU 0.999996 | 100%, IoU 0.999996 | 100%, IoU 0.999996 | 100%, IoU 0.999995 | 100%, IoU 0.999995 |
+| Detection, same input tensor | 100%, IoU 0.99998 | 100%, IoU 0.99999 | 100%, IoU 0.99998 | 100%, IoU 0.99999 | 100%, IoU 0.99998 |
+| nvinfer passes the frame unchanged (`scaling-filter=0`), bit-identical | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Keypoints, end to end | 100%, median 0.0004 px | 100%, median 0.0004 px | 100%, median 0.0004 px | 100%, median 0.0004 px | 100%, median 0.0004 px |
+| Keypoints, same input tensor | 100%, 0.0014 px | 100%, 0.0016 px | 100%, 0.0007 px | 100%, 0.0007 px | 100%, 0.0007 px |
 | Unfolded keypoint ONNX builds | ❌ (constant folding needed) | ✅ | ✅ | ✅ | ✅ |
 
-¹ Pipeline throughput on 9.2 is about 20% lower than on 9.0 (repeated alternating runs: ~128 vs ~160 FPS detection). The TensorRT engine itself is not slower: `trtexec` gives the same GPU compute time on both (median 5.2 ms). The difference is in the DeepStream 9.2 pipeline, not in the parser or the model.
+End to end is compared against the exact frames each version produces (see [Exact frames](#exact-frames-video-decoding-and-colour-conversion)). On 7.0, 7.1 and 9.0, DeepStream reports one extra detection out of ~13,450, right at the threshold.
 
-Planned: arm64 (Jetson) compile checks.
+**Speed.** Absolute FPS on this machine varies by up to ±20% between sessions, so versions are compared in alternating runs within one session:
+- Detection: no difference between versions. Steady state 120–185 FPS depending on session and sinks.
+- Keypoints: ~30 FPS on 7.0–9.0; on 9.2, 15–30% lower. The cause is `nvdsosd`: on 9.2 it needs about 6 ms more GPU time per frame to draw the keypoint display meta, and a `queue` doesn't hide it because the keypoint model already keeps the GPU busy. Decoding, inference, the pose library and encoding are as fast as on 9.0. Without `nvdsosd` (e.g. when only the metadata is needed), 9.2 runs at the same speed.
+- deepstream-app's running "(Avg)" FPS includes startup, which differs between versions (with file output, 9.2 has a stall of a few seconds before frames flow). `test_deepstream_version.py` reports the steady-state median instead.
+
+**Jetson (arm64):** compile-checked only, not run on a device. In the DeepStream 7.0 and 7.1 Jetson images (`--platform linux/arm64`, QEMU), the parser builds with 0 warnings, and the pose library compiles with 0 warnings. Its final link needs `libnvbufsurface`, `libnvbufsurftransform` and `libnvdsbufferpool`, which the Jetson images only contain as links into `/usr/lib/aarch64-linux-gnu/tegra/`; the device fills that directory at run time. Linked without them, the only unresolved symbol is `gst_nvds_buffer_pool_new` (from `libnvdsbufferpool`), so `make` is expected to work on a Jetson.
 
 **Encoding to a file:** keep an explicit `nvvideoconvert ! 'video/x-raw(memory:NVMM),format=I420' ! nvv4l2h264enc` (as deepstream-app does, and as the generated bundle READMEs show). On DeepStream 8.0 the negotiated NV12 path into the encoder hangs at 1920×1080. I420 and NV12 carry the same 4:2:0 data, so there's no quality or measurable speed cost.
 
@@ -106,12 +138,12 @@ TensorRT engines aren't portable between GPUs or TensorRT versions, so nvinfer b
 - Keypoint models (`RFDETRKeypointPreview`, and fine-tuned keypoint checkpoints via their schema). Only the official checkpoint has been tested.
 - Segmentation is not supported yet.
 - FP32. FP16 works, but some transformer layers overflow and degrade detections (fix planned: keep those layers in FP32).
-- Tested on DeepStream 7.0, 7.1, 8.0, 9.0 and 9.2 (x86, dGPU). Jetson not tested yet.
+- Tested on DeepStream 7.0, 7.1, 8.0, 9.0 and 9.2 (x86, dGPU). Jetson: compiles in the DeepStream 7.0 and 7.1 Jetson images, not run on a device yet.
 
 ## Development
 
 `scripts/` has:
-- the parity tests: `parity_deepstream.py`, `parity_keypoints.py`, `check_reference.py`, `check_keypoint_reference.py`, `check_onnx_patch.py`, `same_input_check.py`, `scaler_check.py`
+- the parity tests: `parity_deepstream.py`, `parity_keypoints.py`, `check_reference.py`, `check_keypoint_reference.py`, `check_onnx_patch.py`, `same_input_check.py`, `scaler_check.py`. The end-to-end tests read frames with `rfdetr_deepstream.video` (pass `--ds-version`), so they compare the model and parser, not two colour conversions.
 - the diagnostics used to find the preprocessing differences: `debug_*.py`
 - **`test_deepstream_version.py`**, which runs everything against one DeepStream image:
   ```bash

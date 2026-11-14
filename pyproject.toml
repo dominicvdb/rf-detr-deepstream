@@ -14,7 +14,7 @@ dependencies = [
 # Needed to build from a pretrained name or a .pth checkpoint (exports to ONNX with rfdetr).
 torch = ["rfdetr[onnx]", "torch", "torchvision"]
 # Parity tests and development scripts.
-dev = ["rfdetr[onnx]", "torch", "torchvision", "onnxruntime", "pillow", "opencv-python-headless"]
+dev = ["rfdetr[onnx]", "torch", "torchvision", "onnxruntime", "pillow", "opencv-python-headless", "av"]
 
 [project.scripts]
 rfdetr-deepstream = "rfdetr_deepstream.cli:main"

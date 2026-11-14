@@ -12,16 +12,17 @@ import argparse
 import json
 from pathlib import Path
 
-import cv2
 import onnxruntime as ort
 from PIL import Image
 
 from rfdetr_deepstream.compare import ParityStats
 from rfdetr_deepstream.dumps import kitti_path, read_kitti, read_labels
 from rfdetr_deepstream.reference import run_onnx
+from rfdetr_deepstream.video import read_frames
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--video", default="data/sample_720p.mp4")
+parser.add_argument("--ds-version", default="9.2", help="DeepStream version: selects nvinfer's colour conversion")
 parser.add_argument("--kitti", default="data/ds_out/kitti")
 parser.add_argument("--onnx", default="models/nano/rfdetr-nano.onnx")
 parser.add_argument("--labels", default="models/nano/labels.txt")
@@ -32,15 +33,10 @@ args = parser.parse_args()
 
 label_to_id = read_labels(args.labels)
 session = ort.InferenceSession(args.onnx, providers=["CPUExecutionProvider"])
-cap = cv2.VideoCapture(args.video)
 stats = ParityStats()
 frame = 0
-while True:
-    ok, bgr = cap.read()
-    if not ok or (args.frames and frame >= args.frames):
-        break
-    image = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-    ref = run_onnx(session, image, threshold=args.threshold)
+for rgb in read_frames(args.video, args.frames, args.ds_version):
+    ref = run_onnx(session, Image.fromarray(rgb), threshold=args.threshold)
     ds_xyxy, ds_cls, ds_conf = read_kitti(kitti_path(args.kitti, frame), label_to_id)
     stats.add(ref.xyxy, ref.class_id, ref.confidence, ds_xyxy, ds_cls, ds_conf)
     frame += 1

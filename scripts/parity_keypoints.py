@@ -9,7 +9,6 @@ import argparse
 import json
 from pathlib import Path
 
-import cv2
 import numpy as np
 import onnxruntime as ort
 from PIL import Image
@@ -17,9 +16,11 @@ from PIL import Image
 from rfdetr_deepstream.compare import ParityStats, match
 from rfdetr_deepstream.dumps import pose_dump_path, read_pose_dump
 from rfdetr_deepstream.reference import run_onnx_keypoints
+from rfdetr_deepstream.video import read_frames
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--video", default="data/sample_walk.mov")
+parser.add_argument("--ds-version", default="9.2", help="DeepStream version: selects nvinfer's colour conversion")
 parser.add_argument("--dump", default="data/kp_out/dump")
 parser.add_argument("--onnx", default="models/keypoint/rfdetr-keypoint-preview_folded.onnx")
 parser.add_argument("--threshold", type=float, default=0.5)
@@ -29,15 +30,10 @@ args = parser.parse_args()
 SCHEMA = [0, 17]
 
 session = ort.InferenceSession(args.onnx, providers=["CPUExecutionProvider"])
-cap = cv2.VideoCapture(args.video)
 stats = ParityStats()
 kp_dist, kp_dconf, frame = [], [], 0
-while True:
-    ok, bgr = cap.read()
-    if not ok or (args.frames and frame >= args.frames):
-        break
-    image = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-    ref = run_onnx_keypoints(session, image, SCHEMA, threshold=args.threshold)
+for rgb in read_frames(args.video, args.frames, args.ds_version):
+    ref = run_onnx_keypoints(session, Image.fromarray(rgb), SCHEMA, threshold=args.threshold)
     ds_xyxy, ds_cls, ds_conf, ds_kps = read_pose_dump(pose_dump_path(args.dump, frame))
     stats.add(ref.xyxy, ref.class_id, ref.confidence, ds_xyxy, ds_cls, ds_conf)
     for i, j, _ in match(ref.xyxy, ref.class_id, ds_xyxy, ds_cls):

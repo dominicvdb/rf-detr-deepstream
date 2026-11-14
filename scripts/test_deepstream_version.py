@@ -92,7 +92,7 @@ def deepstream_app_config(uri: str, width: int, height: int, gie_config: str, ki
             if output_file else "type=1\nsync=0")
     return f"""[application]
 enable-perf-measurement=1
-perf-measurement-interval-sec=5
+perf-measurement-interval-sec=1
 gie-kitti-output-dir={kitti_dir}
 
 [source0]
@@ -182,6 +182,7 @@ def main() -> int:
     _, gpu, _ = run.docker("nvidia-smi --query-gpu=name --format=csv,noheader", "gpu")
     results["gpu"] = gpu.strip().splitlines()[-1] if gpu.strip() else None
     print(f"    DeepStream {results['deepstream']}, TensorRT {results['tensorrt']}, GPU {results['gpu']}")
+    ds_version = results["deepstream"] or args.tag.removeprefix("ds")  # selects nvinfer's colour conversion
 
     # ---- Bundles and builds ---------------------------------------------------------------------------------
     step("build parser + pose")
@@ -221,12 +222,18 @@ def main() -> int:
         (build / "det_app.txt").write_text(deepstream_app_config(
             f"file://{SAMPLES}/sample_720p.mp4", DET_VIDEO[1], DET_VIDEO[2], f"{w}/det/config_infer_rfdetr.txt",
             f"{w}/det_out/kitti", f"{w}/det_out/rfdetr_nano.mp4"))
+        # First run builds the engine; the second run is timed (right after an engine build the GPU runs slower).
+        run.docker(f"deepstream-app -c {w}/det_app.txt", "det_engine_build")
         code, out, secs = run.docker(f"deepstream-app -c {w}/det_app.txt", "det_run")
-        perf = re.findall(r"\*\*PERF:\s+[\d.]+ \(([\d.]+)\)", out)
-        results["det_fps"] = float(perf[-1]) if perf else None
+        # Steady state: median of the 1 s intervals without the first and last (partial) one. deepstream-app's
+        # running average includes startup, and how much differs between versions.
+        perf = [float(x) for x in re.findall(r"\*\*PERF:\s+([\d.]+) \([\d.]+\)", out)]
+        steady = sorted(perf[1:-1])
+        results["det_fps"] = steady[len(steady) // 2] if steady else None
         results["det_run_ok"] = code == 0 and "App run successful" in out
         run.python("parity_deepstream.py", "--video", DET_VIDEO[0], "--kitti", str(out_dir / "kitti"),
-                   "--labels", str(build / "det/labels.txt"), "--json", str(build / "det_parity.json"))
+                   "--labels", str(build / "det/labels.txt"), "--ds-version", ds_version,
+                   "--json", str(build / "det_parity.json"))
         results["det_parity"] = load_json(build / "det_parity.json")
         p = results["det_parity"] or {}
         print(f"    run ok: {results['det_run_ok']}, fps {results['det_fps']}, "
@@ -250,7 +257,8 @@ def main() -> int:
         run.python("same_input_check.py", "--task", "detect", "--bin", str(dump), "--onnx", str(onnx),
                    "--out-dir", str(out_dir / "kitti"), "--labels", str(build / "det/labels.txt"),
                    "--json", str(build / "det_same_input.json"))
-        run.python("scaler_check.py", "--bin", str(dump), "--video", DET_CLIP, "--json", str(build / "scaler.json"))
+        run.python("scaler_check.py", "--bin", str(dump), "--video", DET_CLIP, "--ds-version", ds_version,
+                   "--json", str(build / "scaler.json"))
         dump.unlink(missing_ok=True)
         results["det_same_input"] = load_json(build / "det_same_input.json")
         results["scaler"] = load_json(build / "scaler.json")
@@ -277,7 +285,7 @@ def main() -> int:
         results["kp_run_ok"] = code == 0 and frames > 0
         results["kp_fps"] = frames / secs if secs else None
         run.python("parity_keypoints.py", "--video", KP_VIDEO[0], "--dump", str(out_dir / "dump"),
-                   "--json", str(build / "kp_parity.json"))
+                   "--ds-version", ds_version, "--json", str(build / "kp_parity.json"))
         results["kp_parity"] = load_json(build / "kp_parity.json")
         p = results["kp_parity"] or {}
         print(f"    run ok: {results['kp_run_ok']}, fps {results['kp_fps']}, match {p.get('match_rate')}, "
