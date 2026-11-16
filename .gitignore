@@ -19,3 +19,6 @@ data/
 
 # Per-version test output (engines, libraries, dumps)
 build/
+
+# Synthetic test clips (no camera footage)
+!assets/*.mp4
