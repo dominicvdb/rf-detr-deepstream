@@ -1,6 +1,6 @@
 # rfdetr-deepstream
 
-Run [RF-DETR](https://github.com/roboflow/rf-detr) detection and keypoint (pose) models in NVIDIA DeepStream.
+Run [RF-DETR](https://github.com/roboflow/rf-detr) detection, segmentation and keypoint (pose) models in NVIDIA DeepStream.
 
 `rfdetr-deepstream build` turns an RF-DETR model into a self-contained DeepStream folder: an ONNX model with RF-DETR's preprocessing built in, an nvinfer config, labels, and the C++ source of the output parser. Copy the folder to the target, run `make`, and point nvinfer at the config. In FP32, detections match RF-DETR's own `predict()` exactly; FP16 (DeepStream 7.1 and later) is 2.4–4.5× faster and keeps 99.5–100% of the detections.
 
@@ -29,11 +29,12 @@ rfdetr-deepstream build MODEL -o OUT_DIR --frame-size WxH [options]
 ```
 
 `MODEL` is one of:
-- a pretrained name: `nano`, `small`, `medium`, `large`, `base`, `keypoint`
+- a pretrained name: `nano`, `small`, `medium`, `large`, `base`, `seg-nano`, `seg-small`, `seg-medium`, `seg-large`, `seg-xlarge`, `seg-2xlarge`, `keypoint`
 - an RF-DETR checkpoint (`.pth` / `.ckpt`), including fine-tuned models. Class names and, for keypoint models, the keypoint layout are read from the checkpoint.
 - an ONNX export (`.onnx`). Detection: add `--class-names FILE` (one name per line) or `--coco` for the official COCO weights. Keypoints: `--keypoints-per-class` (default `0,17`, the official model).
 
 Keypoint models are detected automatically. The input normalisation (mean/std) is read from the model; an ONNX doesn't record it, so RF-DETR's fixed ImageNet values are used. Only 3-channel (RGB) models are supported, since DeepStream feeds RGB frames.
+Segmentation models are detected automatically too.
 
 | Option | |
 |---|---|
@@ -78,7 +79,7 @@ TensorRT refuses the FP16 flag on a strongly typed network, so the config has `n
 <model>_<W>x<H>.onnx       the model, preprocessing built in
 labels.txt                 one class name per output slot
 config_infer_rfdetr.txt    nvinfer config (paths relative to the bundle)
-parser/                    detection: C++ source + Makefile of the nvinfer parser   -> libnvds_rfdetr.so
+parser/                    detection, segmentation: C++ source + Makefile of the nvinfer parser -> libnvds_rfdetr.so
 pose/                      keypoints: C++ source + Makefile of the pose library      -> libnvds_rfdetr_pose.so
 README.txt                 how to build it and the exact pipeline to run it
 ```
@@ -87,6 +88,8 @@ No TensorRT engine is included: engines only work on the GPU and TensorRT versio
 
 **Detection** uses nvinfer's standard custom parser interface, so the output is normal `NvDsObjectMeta` that trackers, analytics and `nvdsosd` understand.
 
+**Segmentation** uses nvinfer's instance-segmentation interface (`network-type=3`, `output-instance-mask=1`), with the same parser library. Each object gets standard `NvDsObjectMeta` plus a mask in `mask_params`: the probability per pixel, covering the object's box at frame resolution (DeepStream's convention). `segmentation-threshold=0.5` makes a pixel part of the object exactly when RF-DETR's mask logit is > 0, as in `predict()`. `nvdsosd display-mask=1` draws them. Because DeepStream's masks cover the box, any part of a mask that lies outside its box is dropped. That's usually a thin border; `scripts/check_segmentation_local.py` reports how much.
+
 **Keypoints:** nvinfer can't return keypoints from a parser, so it passes the raw output tensors on, and `libnvds_rfdetr_pose.so` decodes them inside NVIDIA's `nvdsvideotemplate` element. It attaches standard `NvDsObjectMeta` per person, the keypoints as object user meta (the struct is in `pose/nvds_rfdetr_keypoints_meta.h`), and skeleton display meta for `nvdsosd`.
 
 ## Running it
@@ -94,7 +97,7 @@ No TensorRT engine is included: engines only work on the GPU and TensorRT versio
 Build the library once on the target:
 
 ```bash
-make -C bundle/parser     # detection
+make -C bundle/parser     # detection, segmentation
 make -C bundle/pose       # keypoints
 ```
 
@@ -119,6 +122,8 @@ gst-launch-1.0 nvstreammux name=m batch-size=4 width=1280 height=720 ! \
   ...
 ```
 
+Segmentation: the same pipelines, with `nvdsosd display-mask=1` to draw the masks.
+
 Each bundle's README.txt has the same pipelines for its model, including the `nvdsvideotemplate` properties for keypoints. The config also works in `deepstream-app` (`[primary-gie] config-file=...`).
 
 Things to know:
@@ -137,6 +142,7 @@ Things to know:
 | Keypoints, batch > 1 | ✅ `--static-batch`¹ | | | | ✅ |
 | Detection, FP16 | ❌ | ✅ `trtexec`² | ✅ `trtexec`² | ✅ | ✅ |
 | Keypoints, FP16 | ❌ | engine builds³ | engine builds³ | engine builds³ | engine builds³ |
+| Segmentation | ⁴ | ⁴ | ⁴ | ⁴ | ⁴ |
 
 Tested on x86 with an RTX 4060 (WSL2). Empty cells weren't tested; they use the same code as the versions around them. On Jetson, both libraries compile in the DeepStream 7.0 and 7.1 Jetson images but haven't been run on a device yet.
 
@@ -146,13 +152,15 @@ Tested on x86 with an RTX 4060 (WSL2). Empty cells weren't tested; they use the 
 
 ³ The FP16 engine builds (strongly typed, FP16 size); keypoint accuracy in FP16 hasn't been measured yet.
 
+⁴ Not run in DeepStream yet. Checked without DeepStream (`scripts/check_segmentation_local.py`): the bundle ONNX against rfdetr's own post-processing, and the C++ parser (compiled with a stand-in for DeepStream's header) against the Python reference, boxes and mask pixels.
+
 Rough pipeline speed on an RTX 4060 (`deepstream-app`, one 720p stream): Nano ~150 FPS in FP32 and ~300 FPS in FP16, Medium ~75 FPS in FP32 and ~200 FPS in FP16. Nano FP32 with 4 streams: ~190 FPS in total. The keypoint model (XLarge backbone): ~30 FPS at 1080p in FP32.
 
 ## Limitations
 
 - **FP16** needs TensorRT 10 (DeepStream 7.1 or later), and on 7.1 and 8.0 a `trtexec` step. Keypoint accuracy and batch > 1 haven't been measured in FP16 yet. FP16 results are close to FP32 but not identical (see [FP16](#fp16)).
 - **Fixed input size.** The bundle is built for one frame size; all streams go through `nvstreammux` at that size.
-- **Segmentation models** aren't supported yet.
+- **Segmentation hasn't been run in DeepStream yet** (see ⁴ above).
 - **Tested models:** all pretrained detection models (Nano, Small, Medium, Large, Base) in FP16, Nano and Medium also in FP32, and the official `RFDETRKeypointPreview` checkpoint. Fine-tuned checkpoints go through the same code but haven't been run in DeepStream yet.
 
 ## Development
@@ -160,3 +168,5 @@ Rough pipeline speed on an RTX 4060 (`deepstream-app`, one 720p stream): Nano ~1
 `pytest` runs the test suite in a few seconds, without DeepStream or a GPU (`pip install -e ".[dev]"`; the parser tests also need a C++ compiler). It uses small synthetic ONNX models with RF-DETR's interface and covers the reference decoder (against rfdetr's own), the preprocessing built into the ONNX (against `predict()`'s), bundle generation and the nvinfer config, the C++ parser (compiled with a stand-in for DeepStream's header, against the reference), the video colour conversion, and the FP16 conversion (LayerNorm scaling, range checks, strongly typed ONNX).
 
 `scripts/test_deepstream_version.py --tag ds9.2 --image <DeepStream image>` builds the libraries in a DeepStream container, runs detection and keypoint pipelines, and compares every frame with RF-DETR in Python. Results per version are in [`results/`](results/). The other scripts in `scripts/` are the individual checks and diagnostics it uses. To run a single bundle, `scripts/ds_run.py --image <DeepStream image> --bundle DIR --name RUN` runs it through `deepstream-app` (KITTI output, steady-state FPS); `scripts/parity_deepstream.py` then compares that output with the Python reference.
+
+`make -C scripts/parser_harness` builds the real parser source with a stand-in for DeepStream's header (`build/parser_harness/harness`), so it can run on raw ONNX Runtime outputs. `scripts/check_segmentation_local.py` uses it to compare a segmentation bundle with rfdetr's own post-processing and the C++ parser, and, with `--gt`, reports box and mask mAP against COCO annotations.

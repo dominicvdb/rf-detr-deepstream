@@ -1,4 +1,4 @@
-"""Build a DeepStream bundle from an RF-DETR detection or keypoint model.
+"""Build a DeepStream bundle from an RF-DETR detection, segmentation or keypoint model.
 
 A bundle is a self-contained folder:
     <name>.onnx               the model (with preprocessing built in when a frame size is given)
@@ -8,10 +8,12 @@ A bundle is a self-contained folder:
     README.txt                how to use it
 
 Detection models: nvinfer parses boxes with libnvds_rfdetr.so (parser/).
+Segmentation models: the same library also parses the masks (nvinfer instance segmentation, network-type=3).
 Keypoint models: nvinfer attaches the raw tensors and libnvds_rfdetr_pose.so (pose/), loaded by nvdsvideotemplate,
 decodes boxes and keypoints.
 
-The model can be a pretrained name ("nano", ..., "keypoint"), an RF-DETR checkpoint (.pth/.ckpt), or an ONNX export.
+The model can be a pretrained name ("nano", ..., "seg-nano", ..., "keypoint"), an RF-DETR checkpoint (.pth/.ckpt),
+or an ONNX export.
 """
 
 from __future__ import annotations
@@ -26,7 +28,13 @@ from pathlib import Path
 
 import onnx
 
-from rfdetr_deepstream.deepstream import NvinferConfig, coco_sparse_labels, write_labels, write_nvinfer_config
+from rfdetr_deepstream.deepstream import (
+    TASK_NAMES,
+    NvinferConfig,
+    coco_sparse_labels,
+    write_labels,
+    write_nvinfer_config,
+)
 from rfdetr_deepstream.fp16 import Fp16Error, make_fp16_safe
 from rfdetr_deepstream.fp16_typed import convert_to_fp16
 from rfdetr_deepstream.onnx_patch import add_preprocessing, fold_constants
@@ -38,6 +46,12 @@ PRETRAINED = {
     "medium": "RFDETRMedium",
     "large": "RFDETRLarge",
     "base": "RFDETRBase",
+    "seg-nano": "RFDETRSegNano",
+    "seg-small": "RFDETRSegSmall",
+    "seg-medium": "RFDETRSegMedium",
+    "seg-large": "RFDETRSegLarge",
+    "seg-xlarge": "RFDETRSegXLarge",
+    "seg-2xlarge": "RFDETRSeg2XLarge",
     "keypoint": "RFDETRKeypointPreview",
 }
 PARSER_FILES = ("nvdsparsebbox_rfdetr.cpp", "Makefile")
@@ -78,9 +92,8 @@ def read_onnx_interface(path: Path) -> OnnxInterface:
 
 
 def check_onnx(iface: OnnxInterface) -> tuple[str, int]:
-    """Validate an RF-DETR export. Returns (task, number of logits slots); task is "detect" or "keypoints"."""
-    if "masks" in iface.outputs:
-        raise BundleError("Segmentation models are not supported yet (the ONNX has a 'masks' output).")
+    """Validate an RF-DETR export. Returns (task, number of logits slots); task is "detect", "segment" or
+    "keypoints"."""
     if "dets" not in iface.outputs or "labels" not in iface.outputs:
         raise BundleError(f"Expected ONNX outputs 'dets' and 'labels', got {list(iface.outputs)}. "
                           "Is this an RF-DETR export?")
@@ -94,6 +107,11 @@ def check_onnx(iface: OnnxInterface) -> tuple[str, int]:
         if len(kp) != 4 or kp[-1] < 7:
             raise BundleError(f"Unexpected keypoints output shape {kp}, expected [1, Q, C*K, D>=7].")
         return "keypoints", num_slots
+    if "masks" in iface.outputs:
+        masks = iface.outputs["masks"]
+        if len(masks) != 4:
+            raise BundleError(f"Unexpected masks output shape {masks}, expected [1, Q, Hm, Wm].")
+        return "segment", num_slots
     return "detect", num_slots
 
 
@@ -282,7 +300,7 @@ def build_bundle(
         export_onnx(rf_model, base_onnx, batch_size, static_batch)
         task, num_slots = check_onnx(read_onnx_interface(base_onnx))
         layout = layout_from_rfdetr(rf_model, num_slots, task)
-        if class_names_file and task == "detect":
+        if class_names_file and task != "keypoints":
             layout = layout_from_names_file(class_names_file, num_slots)
 
     iface = read_onnx_interface(base_onnx)
@@ -304,7 +322,7 @@ def build_bundle(
         log(f"Keypoint model: input {model_w}x{model_h}, {num_slots} class slots, "
             f"keypoints per class {layout.keypoints_per_class}")
     else:
-        log(f"Detection model: input {model_w}x{model_h}, {num_slots} class slots, "
+        log(f"{TASK_NAMES[task].capitalize()} model: input {model_w}x{model_h}, {num_slots} class slots, "
             f"background slot: {layout.background_class_id}")
 
     # 2. The ONNX that goes into the bundle.
@@ -381,7 +399,8 @@ def build_bundle(
     else:
         if parser_lib is None:
             _copy_package_dir("parser", PARSER_FILES, output_dir / "parser")
-        _write_detection_readme(output_dir, bundle_onnx.name, frame_size, batch_size, not isinstance(onnx_batch, str))
+        _write_detection_readme(output_dir, bundle_onnx.name, frame_size, batch_size, not isinstance(onnx_batch, str),
+                                segment=task == "segment")
     write_nvinfer_config(output_dir / "config_infer_rfdetr.txt", config)
     if strongly_typed:
         readme = output_dir / "README.txt"
@@ -469,30 +488,40 @@ def _sources(batch: int, w, h) -> str:
 
 
 def _write_detection_readme(output_dir: Path, onnx_name: str, frame_size, batch_size: int = 1,
-                            static_batch: bool = False) -> None:
+                            static_batch: bool = False, segment: bool = False) -> None:
+    osd = "nvdsosd display-mask=1" if segment else "nvdsosd"
     mux = (f"Set nvstreammux width={frame_size[0]} height={frame_size[1]}: the model expects exactly that frame size."
            if frame_size else "Any nvstreammux size works; nvinfer resizes frames to the model input.")
     w, h = frame_size if frame_size else ("W", "H")
     if batch_size == 1:
         pipeline = f"""     gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! nvv4l2decoder ! m.sink_0 \\
        nvstreammux name=m batch-size=1 width={w} height={h} ! \\
-       nvinfer config-file-path=config_infer_rfdetr.txt ! nvvideoconvert ! nvdsosd ! \\
+       nvinfer config-file-path=config_infer_rfdetr.txt ! nvvideoconvert ! {osd} ! \\
        {_ENCODE_TAIL}"""
         batch_note = ""
     else:
         head, tail = _sources(batch_size, w, h)
         pipeline = (f"""     gst-launch-1.0 {head[0]}
        nvinfer config-file-path=config_infer_rfdetr.txt ! nvmultistreamtiler width=1920 height=1080 ! \\
-       nvvideoconvert ! nvdsosd ! {_ENCODE_TAIL} \\
+       nvvideoconvert ! {osd} ! {_ENCODE_TAIL} \\
 """ + "\n".join(tail))
         batch_note = _batch_note(batch_size, static_batch)
-    (output_dir / "README.txt").write_text(f"""RF-DETR detection bundle for DeepStream, generated by rfdetr-deepstream.
+    kind = "segmentation" if segment else "detection"
+    parser_files = ("C++ source of the output parser (boxes and masks)" if segment
+                    else "C++ source of the output parser")
+    mask_note = """
+Masks: every object gets a mask covering its box (NvDsObjectMeta.mask_params, DeepStream's instance-mask
+convention), at frame resolution, holding the probability per pixel. A pixel belongs to the object when it is
+> mask_params.threshold (segmentation-threshold=0.5 in the config: exactly RF-DETR's mask logit > 0).
+nvdsosd draws them with display-mask=1.
+""" if segment else ""
+    (output_dir / "README.txt").write_text(f"""RF-DETR {kind} bundle for DeepStream, generated by rfdetr-deepstream.
 
 Files
   {onnx_name}       the model
   labels.txt                one class name per logits slot
   config_infer_rfdetr.txt   nvinfer config (paths are relative to this folder)
-  parser/                   C++ source of the output parser
+  parser/                   {parser_files}
 
 {_ENGINE_NOTE.format(onnx=onnx_name, batch=batch_size)}
 
@@ -507,7 +536,7 @@ Files
 
 Detection threshold: pre-cluster-threshold in config_infer_rfdetr.txt ([class-attrs-all], or per class
 in [class-attrs-<id>]).
-""")
+{mask_note}""")
 
 
 def _write_keypoint_readme(output_dir: Path, onnx_name: str, frame_size, props: list[str], batch_size: int = 1,

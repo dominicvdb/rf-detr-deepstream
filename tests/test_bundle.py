@@ -153,5 +153,4 @@ def test_check_onnx_tasks(tmp_path):
     assert check_onnx(read_onnx_interface(make_detr_onnx(tmp_path / "d.onnx"))) == ("detect", 3)
     kp = make_detr_onnx(tmp_path / "k.onnx", classes=2, keypoints=(17, 7))
     assert check_onnx(read_onnx_interface(kp)) == ("keypoints", 2)
-    with pytest.raises(BundleError, match="Segmentation"):
-        check_onnx(read_onnx_interface(make_detr_onnx(tmp_path / "s.onnx", masks=True)))
+    assert check_onnx(read_onnx_interface(make_detr_onnx(tmp_path / "s.onnx", masks=True))) == ("segment", 3)

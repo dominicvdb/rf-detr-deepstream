@@ -43,4 +43,18 @@ typedef struct {
   float detectionConfidence;
 } NvDsInferObjectDetectionInfo;
 
+typedef struct {
+  unsigned int classId;
+  float left;
+  float top;
+  float width;
+  float height;
+  float detectionConfidence;
+  float* mask;
+  unsigned int mask_width;
+  unsigned int mask_height;
+  unsigned int mask_size;
+} NvDsInferInstanceMaskInfo;
+
 #define CHECK_CUSTOM_PARSE_FUNC_PROTOTYPE(f) static_assert(true, "")
+#define CHECK_CUSTOM_INSTANCE_MASK_PARSE_FUNC_PROTOTYPE(f) static_assert(true, "")

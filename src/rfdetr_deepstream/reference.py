@@ -108,6 +108,81 @@ def decode(
 
 
 # --------------------------------------------------------------------------------------------------
+# Segmentation models (RFDETRSeg*). Mirrors rfdetr 1.12.1 models/postprocess.py (_postprocess_masks): the selected
+# queries' mask logits are bilinearly upsampled to the original image (align_corners=False) and thresholded at > 0.
+# --------------------------------------------------------------------------------------------------
+@dataclass
+class SegDetections(Detections):
+    masks: np.ndarray = None  # (N, H, W) bool over the whole ORIGINAL image
+
+
+def _bilinear_axis(n_out: int, n_in: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Source indices and weights along one axis, exactly as PyTorch's bilinear upsample with align_corners=False:
+    src = (dst + 0.5) * in/out - 0.5, clamped at 0; i1 = i0 + 1 except at the last input index."""
+    scale = np.float32(n_in) / np.float32(n_out)
+    src = np.maximum(scale * (np.arange(n_out, dtype=np.float32) + np.float32(0.5)) - np.float32(0.5), 0)
+    i0 = src.astype(np.int64)
+    i1 = np.where(i0 < n_in - 1, i0 + 1, i0)
+    lam1 = (src - i0).astype(np.float32)
+    return i0, i1, (np.float32(1) - lam1), lam1
+
+
+def upsample_mask_logits(logits: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
+    """(Hm, Wm) mask logits -> (out_h, out_w), torch.nn.functional.interpolate(mode="bilinear", align_corners=False).
+    Same summation order as PyTorch's CPU kernel: h0 * (w0 * x00 + w1 * x01) + h1 * (w0 * x10 + w1 * x11)."""
+    hm, wm = logits.shape
+    y0, y1, hl0, hl1 = _bilinear_axis(out_h, hm)
+    x0, x1, wl0, wl1 = _bilinear_axis(out_w, wm)
+    x = logits.astype(np.float32)
+    top = wl0 * x[y0][:, x0] + wl1 * x[y0][:, x1]
+    bottom = wl0 * x[y1][:, x0] + wl1 * x[y1][:, x1]
+    return hl0[:, None] * top + hl1[:, None] * bottom
+
+
+def mask_box_region(xyxy, image_width: int, image_height: int) -> tuple[int, int, int, int]:
+    """The pixels a box's DeepStream mask covers: every pixel the box touches, clipped to the image, at least 1x1.
+    Returns (x0, y0, x1, y1) with x1/y1 exclusive. The C++ parser uses the same rule (maskRegion)."""
+    x0 = min(max(int(np.floor(xyxy[0])), 0), image_width - 1)
+    y0 = min(max(int(np.floor(xyxy[1])), 0), image_height - 1)
+    x1 = min(max(int(np.ceil(xyxy[2])), x0 + 1), image_width)
+    y1 = min(max(int(np.ceil(xyxy[3])), y0 + 1), image_height)
+    return x0, y0, x1, y1
+
+
+def clip_masks_to_boxes(d: SegDetections) -> SegDetections:
+    """What DeepStream keeps of each mask: only the pixels inside mask_box_region() of its box (DeepStream's
+    instance masks cover the box). RF-DETR's masks can reach slightly past their box, usually by a thin border."""
+    clipped = np.zeros_like(d.masks)
+    h, w = d.masks.shape[1:]
+    for i, box in enumerate(d.xyxy):
+        x0, y0, x1, y1 = mask_box_region(box, w, h)
+        clipped[i, y0:y1, x0:x1] = d.masks[i, y0:y1, x0:x1]
+    return SegDetections(xyxy=d.xyxy, confidence=d.confidence, class_id=d.class_id, query=d.query, masks=clipped)
+
+
+def decode_masks(
+    dets: np.ndarray,
+    labels: np.ndarray,
+    masks: np.ndarray,
+    image_width: int,
+    image_height: int,
+    threshold: float = 0.5,
+    num_select: int | None = None,
+    background_class_id: int | None = None,
+) -> SegDetections:
+    """Decode ONE image's raw segmentation-model outputs: decode() for the boxes (steps 1-6), then
+
+    Step 7: each kept detection's mask = its query's (Hm, Wm) mask logits, upsampled bilinearly to the original
+            image size, > 0 (i.e. probability > 0.5).
+    """
+    d = decode(dets, labels, image_width, image_height, threshold, num_select, background_class_id)
+    out = np.zeros((len(d.query), image_height, image_width), dtype=bool)
+    for i, q in enumerate(d.query):
+        out[i] = upsample_mask_logits(masks[q], image_height, image_width) > 0
+    return SegDetections(xyxy=d.xyxy, confidence=d.confidence, class_id=d.class_id, query=d.query, masks=out)
+
+
+# --------------------------------------------------------------------------------------------------
 # Keypoint models (RFDETRKeypointPreview). Mirrors rfdetr 1.12.1 models/postprocess.py (_postprocess_keypoints,
 # _apply_keypoint_trace_fusion, _keypoint_log_mean_trace) and the threshold filter in _prediction/core.py.
 # --------------------------------------------------------------------------------------------------
