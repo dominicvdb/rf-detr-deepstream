@@ -49,7 +49,18 @@ Keypoint models are detected automatically.
 
 Plain RF-DETR breaks in FP16. A few LayerNorms (decoder layer 0 `norm1`, the projector's `cv1/bn`, and some backbone layers) get inputs whose values fit FP16 but whose squared deviations, used in the variance, go far beyond FP16's maximum of 65,504. The variance overflows and those layers' outputs collapse, which can cost most detections. With `--precision fp16`, the build divides the input of each at-risk LayerNorm by a power of two. A LayerNorm gives the same result for a scaled input, apart from the ε term (10⁻⁶ × s², negligible), so the FP32 model is unchanged, but the squares stay at least 16× below the limit. The at-risk layers are found by running the model on synthetic frames (or `--calibration-images`). The largest values come from the weights and appear for any input.
 
-`scripts/fp16_ranges.py` shows the LayerNorm ranges of a model. `scripts/fp16_simulate.py` simulates FP16 in ONNX Runtime (every tensor rounded to FP16, LayerNorms computed step by step in FP16) and compares plain FP16, FP16 with the fix, and FP32 on labelled frames. This is a simulation of FP16, not TensorRT itself. It hasn't been run on a GPU yet (see Limitations).
+`scripts/fp16_ranges.py` shows the LayerNorm ranges of a model. `scripts/fp16_simulate.py` simulates FP16 in ONNX Runtime (every tensor rounded to FP16, LayerNorms computed step by step in FP16) and compares plain FP16, FP16 with the fix, and FP32 on labelled frames. Simulated on public data:
+
+| Pretrained COCO model (31 COCO val images) | Largest squared deviation | Plain FP16 vs FP32 | FP16 + fix vs FP32 |
+|---|---|---|---|
+| Nano | 1,144,000 (decoder `norm1`) | 1 of 137 detections | 137/137, box IoU 0.997 |
+| Medium | 1,147,000 (decoder `norm1`) | 13 of 155 | 153/155, box IoU 0.996 |
+| Seg-nano | 358,000 (projector `cv1/bn`) | 93 of 129, plus 14 spurious | 128/129, box IoU 0.996 |
+
+The fix alone, run in FP32, gives identical detections on all three. Synthetic calibration scaled 8 LayerNorms per
+model. On the COCO images the largest scaled deviation was 86 (a square of 7,400, 9× below FP16's maximum).
+
+This is a simulation of FP16, not TensorRT itself. It hasn't been run on a GPU yet (see Limitations).
 
 ## What's in a bundle
 
