@@ -53,7 +53,7 @@ def main() -> None:
     # Calibration on evenly spread frames
     step = max(len(tensors) // args.calibration, 1)
     dev = layernorm_deviations(args.model, tensors[::step][: args.calibration])
-    scales = layernorm_scales(dev)
+    scales, _ = layernorm_scales(dev)
     print(f"{len(dev)} LayerNorms; at risk (largest |x - mean| > 64 on {args.calibration} calibration frames):")
     for name, s in scales.items():
         print(f"  {dev[name]:8.1f}  -> divide by {s:4d}   {name}")

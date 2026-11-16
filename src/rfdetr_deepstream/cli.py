@@ -39,10 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
     names.add_argument("--coco", action="store_true", help="the .onnx is an official COCO-pretrained model")
     b.add_argument("--threshold", type=float, default=0.5, help="detection threshold (default 0.5)")
     b.add_argument("--precision", choices=["fp32", "fp16"], default="fp32",
-                   help="TensorRT precision (default fp32). fp16 scales the inputs of the LayerNorms that would "
-                        "overflow in FP16 (same results in FP32; see --no-fp16-fix).")
+                   help="TensorRT precision (default fp32). fp16 writes an FP16 ONNX for a strongly typed build "
+                        "(TensorRT 10, DeepStream 7.1+; not DeepStream 7.0), with the LayerNorm inputs that "
+                        "would overflow FP16 scaled.")
     b.add_argument("--no-fp16-fix", action="store_true",
-                   help="fp16: leave the LayerNorms as exported (to compare; expect lost detections)")
+                   help="fp16: plain FP16 instead (FP32 ONNX, network-mode=2, TensorRT picks the precision per "
+                        "layer; for comparison)")
     b.add_argument("--calibration-images", type=Path, nargs="+", metavar="IMAGE",
                    help="fp16: frames to measure LayerNorm ranges on (default: synthetic frames)")
     b.add_argument("--batch-size", type=int, default=1, metavar="N",

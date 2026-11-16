@@ -7,8 +7,9 @@ normalised output collapses to the bias. scripts/fp16_ranges.py shows the ranges
 
 Fix (scale_layernorm_inputs): divide the input of each at-risk LayerNorm by a power of two s. LayerNorm is scale
 invariant: LN(x / s) = (x - m) / sqrt(var + eps * s^2), so the only change is eps * s^2 (1e-6 * 1024 = 1e-3 against a
-variance of hundreds or more). A power of two is exact in floating point. This works on every TensorRT version and
-needs no per-layer precision settings in nvinfer.
+variance of hundreds or more). A power of two is exact in floating point. The same calibration run checks that no
+other tensor comes near FP16's maximum, and that the scaling keeps small values above FP16's subnormal range.
+fp16_typed then converts the ONNX to FP16 for a strongly typed TensorRT build.
 
 Simulation (simulate_fp16): every float tensor is rounded to FP16 (Cast to float16 and back: FP16 storage with range
 overflow to inf), and each LayerNorm can be decomposed into its steps, each rounded to FP16, which is what an FP16
@@ -19,6 +20,7 @@ kernels may accumulate in FP32 and choose FP32 for some layers. It shows whether
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -29,33 +31,67 @@ FP16_MAX = 65504.0
 # Scale LayerNorm inputs so that the measured largest |x - mean| becomes at most this. Squares are then at most 4096:
 # 16x headroom below FP16's maximum for frames with larger values than the calibration frames.
 TARGET_MAX_DEVIATION = 64.0
+# After scaling, the median |x - mean| at a LayerNorm input stays at least this (well above FP16's subnormals).
+MIN_MEDIAN_DEVIATION = 1e-3
+# Any tensor above this on the calibration inputs is an overflow risk: 4x headroom for frames with larger values.
+OVERFLOW_LIMIT = FP16_MAX / 4
 
 
 # --------------------------------------------------------------------------------------------------
-# Calibration: largest |x - mean| at each LayerNorm input
+# Calibration: LayerNorm input deviations and the largest value of every tensor
 # --------------------------------------------------------------------------------------------------
-def layernorm_deviations(model_path: Path, inputs: list[np.ndarray]) -> dict[str, float]:
-    """LayerNorm node name -> largest |x - row mean| of its input over the given model inputs (FP32, ONNX Runtime)."""
+@dataclass
+class Calibration:
+    max_deviation: dict[str, float]       # LayerNorm -> largest |x - row mean| of its input
+    median_deviation: dict[str, float]    # LayerNorm -> median (over inputs) of the median |x - row mean|
+    tensor_max: dict[str, tuple[float, str]] = field(default_factory=dict)  # tensor -> (largest |x|, producing node)
+
+
+def calibrate(model_path: Path, inputs: list[np.ndarray]) -> Calibration:
+    """Run the model in FP32 (ONNX Runtime) on the given model inputs and record the FP16-relevant ranges."""
     import onnxruntime as ort
 
     model = onnx.load(str(model_path))
     lns = [n for n in model.graph.node if n.op_type == "LayerNormalization"]
+    floats = _float_outputs(model)
+    producer = {o: n.name for n in model.graph.node for o in n.output}
     existing = {o.name for o in model.graph.output}
-    for n in lns:
-        if n.input[0] not in existing:
-            model.graph.output.append(helper.make_empty_tensor_value_info(n.input[0]))
-            existing.add(n.input[0])
+    for name in sorted(floats | {n.input[0] for n in lns}):
+        if name not in existing:
+            model.graph.output.append(helper.make_empty_tensor_value_info(name))
+            existing.add(name)
     session = ort.InferenceSession(model.SerializeToString(), providers=["CPUExecutionProvider"])
     names = [o.name for o in session.get_outputs()]
     inp = session.get_inputs()[0].name
-    dev = {n.name: 0.0 for n in lns}
+    cal = Calibration({n.name: 0.0 for n in lns}, {})
+    medians: dict[str, list[float]] = {n.name: [] for n in lns}
     for x in inputs:
         values = dict(zip(names, session.run(None, {inp: x})))
         for n in lns:
             axis = next((a.i for a in n.attribute if a.name == "axis"), -1)
             v = values[n.input[0]]
-            dev[n.name] = max(dev[n.name], float(np.abs(v - v.mean(axis=axis, keepdims=True)).max()))
-    return dev
+            dev = np.abs(v - v.mean(axis=axis, keepdims=True))
+            cal.max_deviation[n.name] = max(cal.max_deviation[n.name], float(dev.max()))
+            medians[n.name].append(float(np.median(dev)))
+        for name in floats:
+            m = float(np.abs(values[name]).max()) if values[name].size else 0.0
+            if m > cal.tensor_max.get(name, (-1.0, ""))[0]:
+                cal.tensor_max[name] = (m, producer.get(name, ""))
+    # Median over the inputs, without flat ones (all deviations 0: nothing to lose precision on).
+    cal.median_deviation = {name: float(np.median([m for m in v if m > 0])) if any(m > 0 for m in v) else math.inf
+                            for name, v in medians.items()}
+    return cal
+
+
+def layernorm_deviations(model_path: Path, inputs: list[np.ndarray]) -> dict[str, float]:
+    """LayerNorm node name -> largest |x - row mean| of its input over the given model inputs (FP32, ONNX Runtime)."""
+    return calibrate(model_path, inputs).max_deviation
+
+
+def overflow_risks(cal: Calibration, limit: float = OVERFLOW_LIMIT) -> list[tuple[str, str, float]]:
+    """(tensor, node, largest |x|) for every tensor above `limit` on the calibration inputs, largest first."""
+    risky = [(t, node, m) for t, (m, node) in cal.tensor_max.items() if m > limit]
+    return sorted(risky, key=lambda r: -r[2])
 
 
 def calibration_inputs(height: int, width: int, batch: int = 1, images: list[Path] | None = None,
@@ -85,26 +121,53 @@ def calibration_inputs(height: int, width: int, batch: int = 1, images: list[Pat
     return out
 
 
-def make_fp16_safe(onnx_in: Path, onnx_out: Path, images: list[Path] | None = None) -> dict[str, int]:
+class Fp16Error(ValueError):
+    """The model can't be made FP16-safe (a tensor outside the LayerNorms gets too close to FP16's maximum)."""
+
+
+@dataclass
+class Fp16Plan:
+    scales: dict[str, int]       # LayerNorm -> power-of-two divisor of its input
+    keep_fp32: list[str]         # LayerNorms that no scale makes safe without losing precision
+    smallest_median: float       # smallest median |x - mean| at a LayerNorm input after scaling
+
+
+def make_fp16_safe(onnx_in: Path, onnx_out: Path, images: list[Path] | None = None) -> Fp16Plan:
     """Calibrate onnx_in (plain model, input = model size) and write onnx_out with the at-risk LayerNorm inputs
-    scaled. Returns {LayerNorm node: divisor}."""
+    scaled. Raises Fp16Error when a tensor outside the LayerNorms would overflow FP16."""
     model = onnx.load(str(onnx_in))
     dims = [d.dim_value for d in model.graph.input[0].type.tensor_type.shape.dim]
     batch = dims[0] or 1
-    scales = layernorm_scales(layernorm_deviations(onnx_in, calibration_inputs(dims[2], dims[3], batch, images)))
+    cal = calibrate(onnx_in, calibration_inputs(dims[2], dims[3], batch, images))
+    risky = overflow_risks(cal)
+    if risky:
+        lines = "; ".join(f"{node or t}: {m:.0f}" for t, node, m in risky[:5])
+        raise Fp16Error(f"FP16 overflow risk outside the LayerNorms (largest |value| on the calibration frames, "
+                        f"limit {OVERFLOW_LIMIT:.0f}, FP16 max {FP16_MAX:.0f}): {lines}")
+    scales, keep = layernorm_scales(cal.max_deviation, medians=cal.median_deviation)
     scale_layernorm_inputs(model, scales)
     onnx.checker.check_model(model)
     onnx.save(model, str(onnx_out))
-    return scales
+    medians = [m / scales.get(n, 1) for n, m in cal.median_deviation.items() if n not in keep]
+    return Fp16Plan(scales, keep, min(medians, default=math.inf))
 
 
-def layernorm_scales(deviations: dict[str, float], target: float = TARGET_MAX_DEVIATION) -> dict[str, int]:
-    """Power-of-two divisor per LayerNorm that brings its largest deviation to at most `target`; only those > 1."""
-    scales = {}
+def layernorm_scales(deviations: dict[str, float], target: float = TARGET_MAX_DEVIATION,
+                     medians: dict[str, float] | None = None,
+                     min_median: float = MIN_MEDIAN_DEVIATION) -> tuple[dict[str, int], list[str]]:
+    """Power-of-two divisor per LayerNorm that brings its largest deviation to at most `target` (only those > 1),
+    and the LayerNorms for which that divisor would push the median deviation below `min_median` (FP16 loses
+    precision for small values: subnormals start at 6e-5). Those get no divisor and belong in FP32."""
+    scales, keep = {}, []
     for name, d in deviations.items():
-        if d > target:
-            scales[name] = 2 ** math.ceil(math.log2(d / target))
-    return scales
+        if d <= target:
+            continue
+        s = 2 ** math.ceil(math.log2(d / target))
+        if medians is not None and medians[name] / s < min_median:
+            keep.append(name)
+        else:
+            scales[name] = s
+    return scales, keep
 
 
 # --------------------------------------------------------------------------------------------------

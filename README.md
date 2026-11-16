@@ -42,25 +42,36 @@ Keypoint models are detected automatically.
 | `--static-batch` | Fixed batch of `--batch-size` instead of a dynamic one. Needed for keypoint models with batch > 1 on DeepStream 7.0. |
 | `--threshold 0.5` | Detection threshold. |
 | `--class-names FILE` | Class names, one per line. Overrides a checkpoint's names. |
-| `--precision fp32\|fp16` | TensorRT precision (default FP32). FP16 makes the model FP16-safe first, see [FP16](#fp16). `--no-fp16-fix` skips that (to compare); `--calibration-images IMG ...` measures on your frames instead of synthetic ones. |
+| `--precision fp32\|fp16` | TensorRT precision (default FP32). FP16 needs TensorRT 10 (DeepStream 7.1 or later), see [FP16](#fp16). `--calibration-images IMG ...` measures the FP16 ranges on your frames instead of synthetic ones; `--no-fp16-fix` builds plain FP16 (to compare). |
 | `--parser-lib PATH` | Detection: use an already built parser library instead of shipping its source. |
 
 ### FP16
 
-Plain RF-DETR breaks in FP16. A few LayerNorms (decoder layer 0 `norm1`, the projector's `cv1/bn`, and some backbone layers) get inputs whose values fit FP16 but whose squared deviations, used in the variance, go far beyond FP16's maximum of 65,504. The variance overflows and those layers' outputs collapse, which can cost most detections. With `--precision fp16`, the build divides the input of each at-risk LayerNorm by a power of two. A LayerNorm gives the same result for a scaled input, apart from the ε term (10⁻⁶ × s², negligible), so the FP32 model is unchanged, but the squares stay at least 16× below the limit. The at-risk layers are found by running the model on synthetic frames (or `--calibration-images`). The largest values come from the weights and appear for any input.
+`--precision fp16` writes an FP16 ONNX and has TensorRT build it **strongly typed**: every layer runs in the type the ONNX gives it. Only the preprocessing built into the ONNX stays FP32. In nvinfer's normal FP16 mode TensorRT picks FP16 or FP32 per layer by measured speed, so the same ONNX can give an FP16 engine on one build and a mostly FP32 one (FP32 size, FP32 speed) on the next. Strong typing makes every build the same.
 
-`scripts/fp16_ranges.py` shows the LayerNorm ranges of a model. `scripts/fp16_simulate.py` simulates FP16 in ONNX Runtime (every tensor rounded to FP16, LayerNorms computed step by step in FP16) and compares plain FP16, FP16 with the fix, and FP32 on labelled frames. Simulated on public data:
+Before converting, the build runs the model in FP32 on calibration frames (synthetic, or `--calibration-images`) and:
+- divides the input of each LayerNorm whose squared deviations would overflow FP16 (above 65,504) by a power of two. A LayerNorm gives the same result for a scaled input, so the FP32 model is unchanged. RF-DETR Nano and Medium have 8 such LayerNorms (decoder layer 0 `norm1`, the projector's `cv1/bn`, late backbone layers). A LayerNorm whose small values would lose FP16 precision after scaling stays FP32 instead;
+- stops with an error if any other tensor gets within 4× of FP16's maximum (none does in Nano or Medium; the largest activation is about 1,100).
 
-| Pretrained COCO model (31 COCO val images) | Largest squared deviation | Plain FP16 vs FP32 | FP16 + fix vs FP32 |
+Measured on `sample_720p.mp4` (1442 frames, RTX 4060), compared frame by frame with RF-DETR in ONNX Runtime (FP32):
+
+| | Detections matched | Box IoU (mean) | GPU time per frame |
 |---|---|---|---|
-| Nano | 1,144,000 (decoder `norm1`) | 1 of 137 detections | 137/137, box IoU 0.997 |
-| Medium | 1,147,000 (decoder `norm1`) | 13 of 155 | 153/155, box IoU 0.996 |
-| Seg-nano | 358,000 (projector `cv1/bn`) | 93 of 129, plus 14 spurious | 128/129, box IoU 0.996 |
+| Nano FP32 | 100.00% | 1.0000 | 5.4 ms |
+| Nano FP16 | 99.44% | 0.9930 | 2.2 ms |
+| Medium FP32 | 100.00% | 1.0000 | 12.8 ms |
+| Medium FP16 | 99.69% | 0.9920 | 3.9 ms |
 
-The fix alone, run in FP32, gives identical detections on all three. Synthetic calibration scaled 8 LayerNorms per
-model. On the COCO images the largest scaled deviation was 86 (a square of 7,400, 9× below FP16's maximum).
+DeepStream 9.2, 1280×720 bundles; GPU time from `trtexec`. On DeepStream 8.0 (engine from `trtexec`) the FP16 results are within 0.05 percentage points of these. The unmatched detections are close to the threshold: FP16 rounding moves their score across it.
 
-This is a simulation of FP16, not TensorRT itself. It hasn't been run on a GPU yet (see Limitations).
+**DeepStream versions:**
+- **9.0 and later:** nothing to do; the config has `strongly-typed=1`.
+- **7.1 and 8.0:** nvinfer has no strongly typed option. Build the engine once on the target with `trtexec --stronglyTyped`; the bundle's README.txt has the exact command. Without it nvinfer builds an FP32 engine: same detections as FP32, no speedup.
+- **7.0:** FP16 isn't supported. TensorRT 8.6 builds FP16 engines that lose almost all detections (1.4% left on Nano, with or without the fixes above).
+
+TensorRT refuses the FP16 flag on a strongly typed network, so the config has `network-mode=0` and the engine file name ends in `_fp32` although the engine is FP16. An FP16 engine is about half the size of an FP32 one.
+
+`scripts/fp16_ranges.py` shows the LayerNorm ranges of a model, and `scripts/fp16_simulate.py` simulates FP16 in ONNX Runtime.
 
 ## What's in a bundle
 
@@ -125,22 +136,25 @@ Things to know:
 | Keypoints | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Detection, batch > 1 | ✅ | | | | ✅ |
 | Keypoints, batch > 1 | ✅ `--static-batch`¹ | | | | ✅ |
+| Detection, FP16 | ❌ | | ✅ `trtexec`² | | ✅ |
 
 Tested on x86 with an RTX 4060 (WSL2). Empty cells weren't tested; they use the same code as the versions around them. On Jetson, both libraries compile in the DeepStream 7.0 and 7.1 Jetson images but haven't been run on a device yet.
 
 ¹ TensorRT 8.6 can't build the keypoint model with a dynamic batch. With `--static-batch`, the batch-2 engine builds on an 8 GB GPU (not yet run end to end); batch 4 runs out of memory there.
 
+² Engine built with the `trtexec --stronglyTyped` command from the bundle's README.txt. FP16 was tested with Nano and Medium, batch 1.
+
 Rough speed on an RTX 4060, FP32: RF-DETR Nano ~150 FPS for one 720p stream, ~190 FPS in total with 4 streams; the keypoint model (XLarge backbone) ~30 FPS at 1080p.
 
 ## Limitations
 
-- **FP16 hasn't been run in TensorRT yet.** The fix is verified in an FP16 simulation (see [FP16](#fp16)). Until it's checked on a GPU, FP32 is the safe choice.
+- **FP16** needs TensorRT 10 (DeepStream 7.1 or later), and on 7.1 and 8.0 a `trtexec` step. Keypoint models and batch > 1 haven't been run in FP16 yet. FP16 results are close to FP32 but not identical (see [FP16](#fp16)).
 - **Fixed input size.** The bundle is built for one frame size; all streams go through `nvstreammux` at that size.
 - **Segmentation models** aren't supported yet.
 - **Tested models:** RF-DETR Nano and the official `RFDETRKeypointPreview` checkpoint. The other sizes and fine-tuned checkpoints go through the same code but haven't been run in DeepStream yet.
 
 ## Development
 
-`pytest` runs the test suite in a few seconds, without DeepStream or a GPU (`pip install -e ".[dev]"`; the parser tests also need a C++ compiler). It uses small synthetic ONNX models with RF-DETR's interface and covers the reference decoder (against rfdetr's own), the preprocessing built into the ONNX (against `predict()`'s), bundle generation and the nvinfer config, the C++ parser (compiled with a stand-in for DeepStream's header, against the reference), the video colour conversion, and the FP16 LayerNorm fix.
+`pytest` runs the test suite in a few seconds, without DeepStream or a GPU (`pip install -e ".[dev]"`; the parser tests also need a C++ compiler). It uses small synthetic ONNX models with RF-DETR's interface and covers the reference decoder (against rfdetr's own), the preprocessing built into the ONNX (against `predict()`'s), bundle generation and the nvinfer config, the C++ parser (compiled with a stand-in for DeepStream's header, against the reference), the video colour conversion, and the FP16 conversion (LayerNorm scaling, range checks, strongly typed ONNX).
 
 `scripts/test_deepstream_version.py --tag ds9.2 --image <DeepStream image>` builds the libraries in a DeepStream container, runs detection and keypoint pipelines, and compares every frame with RF-DETR in Python. Results per version are in [`results/`](results/). The other scripts in `scripts/` are the individual checks and diagnostics it uses.
