@@ -224,10 +224,13 @@ def build_bundle(
     keypoints_per_class: list[int] | None = None,
     batch_size: int = 1,
     static_batch: bool = False,
+    resize: str = "bilinear",
     log=print,
 ) -> Path:
     if batch_size < 1:
         raise BundleError("--batch-size must be at least 1.")
+    if resize == "antialias" and not frame_size:
+        raise BundleError("--resize antialias needs --frame-size: the resize is built into the ONNX for one frame size.")
     # Batch 1 stays a fixed-batch export: TensorRT 8.6 can't build keypoint models with a dynamic batch at all.
     static_batch = static_batch or batch_size == 1
     output_dir = Path(output_dir)
@@ -288,8 +291,9 @@ def build_bundle(
         if frame_size:
             frame_w, frame_h = frame_size
             bundle_onnx = output_dir / f"{stem}_{frame_w}x{frame_h}.onnx"
-            add_preprocessing(source, bundle_onnx, frame_height=frame_h, frame_width=frame_w)
-            log(f"Preprocessing built into the ONNX for {frame_w}x{frame_h} frames.")
+            add_preprocessing(source, bundle_onnx, frame_height=frame_h, frame_width=frame_w, resize=resize)
+            log(f"Preprocessing built into the ONNX for {frame_w}x{frame_h} frames "
+                f"({'antialiased resize, as in training' if resize == 'antialias' else 'bilinear resize, as predict()'}).")
         else:
             bundle_onnx = output_dir / f"{stem}.onnx"
             if source.resolve() != bundle_onnx.resolve():

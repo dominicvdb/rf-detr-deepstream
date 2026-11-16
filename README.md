@@ -38,12 +38,19 @@ Keypoint models are detected automatically.
 | Option | |
 |---|---|
 | `--frame-size WxH` | Size of the frames nvinfer receives (the `nvstreammux` width and height). Builds the preprocessing into the ONNX, so DeepStream gives the same results as `predict()`. Strongly recommended; without it nvinfer approximates the preprocessing and detections differ noticeably. |
+| `--resize bilinear\|antialias` | Resize built into the ONNX (needs `--frame-size`). `bilinear` (default) matches `predict()` exactly. `antialias` smooths before downscaling, as rfdetr training (PIL) and cfg-detect evaluation do. See [Resize](#resize-bilinear-or-antialias). |
 | `--batch-size N` | Maximum number of streams per inference call (default 1). Above 1 the ONNX gets a dynamic batch dimension. |
 | `--static-batch` | Fixed batch of `--batch-size` instead of a dynamic one. Needed for keypoint models with batch > 1 on DeepStream 7.0. |
 | `--threshold 0.5` | Detection threshold. |
 | `--class-names FILE` | Class names, one per line. Overrides a checkpoint's names. |
 | `--precision fp32\|fp16` | TensorRT precision. Use FP32 for now (see Limitations). |
 | `--parser-lib PATH` | Detection: use an already built parser library instead of shipping its source. |
+
+### Resize: bilinear or antialias
+
+RF-DETR trains on images resized with PIL, which smooths before shrinking (antialiasing). `predict()` resizes without smoothing. At a large downscale (1920×1080 to 384×384 is 5×) the two give visibly different inputs. The default `--resize bilinear` matches `predict()`. `--resize antialias` matches training instead: a fixed-size antialiased resize is two matrix multiplications with precomputed weights (+4.6 MB in the ONNX at 1920×1080), equal to torchvision's `resize(antialias=True)` to float precision and within 1 grey level of PIL's 8-bit resize.
+
+Which one scores better depends on the model, and it isn't always antialias. Run `scripts/check_resize_local.py` on a new model's test set to see whether it matters. It tends to matter more for small or thin objects.
 
 ## What's in a bundle
 
@@ -118,6 +125,7 @@ Rough speed on an RTX 4060, FP32: RF-DETR Nano ~150 FPS for one 720p stream, ~19
 ## Limitations
 
 - **FP32 only for now.** FP16 runs, but some transformer layers overflow and detections degrade. A fix (keeping those layers in FP32) is planned.
+- **`--resize antialias` hasn't been run in DeepStream yet** (TensorRT MatMul; checked with ONNX Runtime only).
 - **Fixed input size.** The bundle is built for one frame size; all streams go through `nvstreammux` at that size.
 - **Segmentation models** aren't supported yet.
 - **Tested models:** RF-DETR Nano and the official `RFDETRKeypointPreview` checkpoint. The other sizes and fine-tuned checkpoints go through the same code but haven't been run in DeepStream yet.

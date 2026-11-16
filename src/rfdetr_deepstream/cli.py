@@ -33,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--frame-size", type=_frame_size, metavar="WxH",
                    help="size of the frames nvinfer receives (nvstreammux width x height). Builds the preprocessing "
                         "into the ONNX for exact parity with predict(). Strongly recommended.")
+    b.add_argument("--resize", choices=["bilinear", "antialias"], default="bilinear",
+                   help="resize built into the ONNX (needs --frame-size). bilinear (default): exactly like RF-DETR's "
+                        "predict(). antialias: smooths before downscaling, like rfdetr training and cfg-detect "
+                        "evaluation (within 1 grey level of PIL's resize).")
     names = b.add_mutually_exclusive_group()
     names.add_argument("--class-names", type=Path, metavar="FILE",
                        help="class names, one per line (required for a custom .onnx; overrides a checkpoint's names)")
@@ -75,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
                 keypoints_per_class=args.keypoints_per_class,
                 batch_size=args.batch_size,
                 static_batch=args.static_batch,
+                resize=args.resize,
             )
         except BundleError as e:
             print(f"error: {e}", file=sys.stderr)
