@@ -16,6 +16,7 @@ The model can be a pretrained name ("nano", ..., "keypoint"), an RF-DETR checkpo
 
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 import warnings
@@ -26,6 +27,8 @@ from pathlib import Path
 import onnx
 
 from rfdetr_deepstream.deepstream import NvinferConfig, coco_sparse_labels, write_labels, write_nvinfer_config
+from rfdetr_deepstream.fp16 import Fp16Error, make_fp16_safe
+from rfdetr_deepstream.fp16_typed import convert_to_fp16
 from rfdetr_deepstream.onnx_patch import add_preprocessing, fold_constants
 
 PRETRAINED = {
@@ -224,6 +227,8 @@ def build_bundle(
     keypoints_per_class: list[int] | None = None,
     batch_size: int = 1,
     static_batch: bool = False,
+    fp16_fix: bool = True,
+    calibration_images: list[Path] | None = None,
     log=print,
 ) -> Path:
     if batch_size < 1:
@@ -285,6 +290,22 @@ def build_bundle(
             source = Path(tmp) / "folded.onnx"
             fold_constants(base_onnx, source)
             log("Constant subgraphs folded (required for the keypoint model on TensorRT 8.6).")
+        if precision == "fp16" and fp16_fix:
+            safe = Path(tmp) / "fp16_safe.onnx"
+            try:
+                plan = make_fp16_safe(source, safe, calibration_images)
+            except Fp16Error as e:
+                raise BundleError(f"{e}. Use --precision fp32 for this model.") from e
+            source = safe
+            calibrated = f"{len(calibration_images)} images" if calibration_images else "synthetic frames"
+            log(f"FP16: scaled the input of {len(plan.scales)} LayerNorm(s) at risk of FP16 overflow in their "
+                f"variance (calibrated on {calibrated}; smallest median deviation after scaling "
+                f"{plan.smallest_median:.2g}):")
+            for name, divisor in plan.scales.items():
+                log(f"  1/{divisor:<4d} {name}")
+            if plan.keep_fp32:
+                log(f"{len(plan.keep_fp32)} LayerNorm(s) stay in FP32 (no scale keeps their small values precise in "
+                    f"FP16): {', '.join(plan.keep_fp32)}")
         if frame_size:
             frame_w, frame_h = frame_size
             bundle_onnx = output_dir / f"{stem}_{frame_w}x{frame_h}.onnx"
@@ -296,11 +317,20 @@ def build_bundle(
                 shutil.copyfile(source, bundle_onnx)
             log("WARNING: no --frame-size given, so nvinfer approximates the preprocessing. Expect noticeably "
                 "different detections than predict() (measured: 90% match, box IoU 0.87). Use --frame-size.")
+        strongly_typed = precision == "fp16" and fp16_fix
+        if strongly_typed:
+            keep_names = (r"^pre_",) + tuple(f"^{re.escape(n)}$" for n in plan.keep_fp32)
+            convert_to_fp16(bundle_onnx, bundle_onnx, keep_fp32_ops=(), keep_fp32_names=keep_names)
+            log("FP16: ONNX converted to FP16 for a strongly typed TensorRT build (only the preprocessing"
+                f"{' and the LayerNorms above' if plan.keep_fp32 else ''} in FP32).")
     if exported_here is not None and exported_here.exists():
         exported_here.unlink()
 
-    if precision == "fp16":
-        log("WARNING: FP16 is known to overflow in some transformer layers of RF-DETR, which degrades detections.")
+    if precision == "fp16" and not fp16_fix:
+        log("WARNING: plain FP16 (--no-fp16-fix): TensorRT picks FP16 or FP32 per layer by speed, so engines can come "
+            "out mostly FP32, and the LayerNorms are not scaled.")
+    if precision == "fp16" and task == "keypoints":
+        log("WARNING: FP16 has not been verified for keypoint models yet.")
 
     # 3. C++ source (built on the target), labels, config, README.
     write_labels(output_dir / "labels.txt", layout.names)
@@ -311,6 +341,7 @@ def build_bundle(
         num_classes=num_slots,
         threshold=threshold,
         precision=precision,
+        strongly_typed=strongly_typed,
         background_class_id=layout.background_class_id,
         preprocessing_in_model=frame_size is not None,
         task=task,
@@ -326,8 +357,36 @@ def build_bundle(
             _copy_package_dir("parser", PARSER_FILES, output_dir / "parser")
         _write_detection_readme(output_dir, bundle_onnx.name, frame_size, batch_size, not isinstance(onnx_batch, str))
     write_nvinfer_config(output_dir / "config_infer_rfdetr.txt", config)
+    if strongly_typed:
+        readme = output_dir / "README.txt"
+        readme.write_text(readme.read_text() + _fp16_note(bundle_onnx, batch_size, isinstance(onnx_batch, str)))
     log(f"Bundle written to {output_dir}/")
     return output_dir
+
+
+def _fp16_note(onnx_path: Path, batch_size: int, dynamic_batch: bool) -> str:
+    inp = onnx.load(str(onnx_path), load_external_data=False).graph.input[0]
+    _, c, h, w = [d.dim_value or d.dim_param for d in inp.type.tensor_type.shape.dim]
+    # network-mode=0: nvinfer names the engine after it (see deepstream.write_nvinfer_config).
+    engine = f"{onnx_path.name}_b{batch_size}_gpu0_fp32.engine"
+    shapes = (f" \\\n       --minShapes={inp.name}:1x{c}x{h}x{w} --optShapes={inp.name}:{batch_size}x{c}x{h}x{w}"
+              f" --maxShapes={inp.name}:{batch_size}x{c}x{h}x{w}") if dynamic_batch else ""
+    return f"""
+FP16
+  The ONNX is FP16 (only the preprocessing in FP32) and is built strongly typed: TensorRT keeps exactly these
+  types instead of choosing FP16 or FP32 per layer. TensorRT refuses the FP16 flag for strongly typed networks, so
+  the config has network-mode=0 and the engine file name ends in _fp32, although the engine is FP16.
+
+  DeepStream 9.0 and later: nothing to do (strongly-typed=1 in the config).
+  DeepStream 7.1 and 8.0: nvinfer has no strongly-typed option. Build the engine once on the target, in this
+  folder; nvinfer then loads it:
+     /usr/src/tensorrt/bin/trtexec --onnx={onnx_path.name} --stronglyTyped \\
+       --saveEngine={engine}{shapes}
+  Without that engine, nvinfer builds an FP32 engine (same detections as FP32, no speedup).
+  DeepStream 7.0 (TensorRT 8.6): FP16 doesn't work (RF-DETR loses almost all detections). Use an FP32 bundle.
+
+  Check: an FP16 engine is about half the size of an FP32 one.
+"""
 
 
 def _pose_props(layout: ClassLayout, threshold: float) -> list[str]:
