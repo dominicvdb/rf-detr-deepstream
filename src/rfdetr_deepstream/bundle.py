@@ -30,6 +30,7 @@ from rfdetr_deepstream.deepstream import NvinferConfig, coco_sparse_labels, writ
 from rfdetr_deepstream.fp16 import Fp16Error, make_fp16_safe
 from rfdetr_deepstream.fp16_typed import convert_to_fp16
 from rfdetr_deepstream.onnx_patch import add_preprocessing, fold_constants
+from rfdetr_deepstream.reference import IMAGENET_MEAN, IMAGENET_STD
 
 PRETRAINED = {
     "nano": "RFDETRNano",
@@ -165,6 +166,17 @@ def load_rfdetr(model: str):
         return rfdetr.from_checkpoint(model)
 
 
+def normalization_from_rfdetr(rf_model) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """The model's own input normalisation (rfdetr keeps it in .means / .stds; ImageNet unless changed)."""
+    mean = tuple(float(v) for v in getattr(rf_model, "means", IMAGENET_MEAN))
+    std = tuple(float(v) for v in getattr(rf_model, "stds", IMAGENET_STD))
+    if len(mean) != len(std):
+        raise BundleError(f"The model has {len(mean)} mean values but {len(std)} std values.")
+    if any(s <= 0 for s in std):
+        raise BundleError(f"The model's std values must be positive, got {list(std)}.")
+    return mean, std
+
+
 def export_onnx(rf_model, out_path: Path, batch_size: int = 1, static_batch: bool = False) -> None:
     with tempfile.TemporaryDirectory() as tmp, warnings.catch_warnings():
         # PyTorch's TracerWarnings say "this shape becomes a constant": exactly what a static engine needs.
@@ -239,6 +251,8 @@ def build_bundle(
     output_dir.mkdir(parents=True, exist_ok=True)
     is_onnx = model.lower().endswith(".onnx")
     exported_here: Path | None = None
+    # An ONNX doesn't record its normalisation: RF-DETR's fixed ImageNet values.
+    mean, std = IMAGENET_MEAN, IMAGENET_STD
 
     # 1. Get the ONNX, the task and the class layout.
     if is_onnx:
@@ -261,7 +275,8 @@ def build_bundle(
             raise BundleError(f"{model} is neither a pretrained name ({', '.join(PRETRAINED)}) nor an existing file.")
         log(f"Loading RF-DETR model: {model}")
         rf_model = load_rfdetr(model)
-        stem = f"rfdetr-{model.lower()}" if model.lower() in PRETRAINED else Path(model).stem
+        mean, std = normalization_from_rfdetr(rf_model)
+        stem =f"rfdetr-{model.lower()}" if model.lower() in PRETRAINED else Path(model).stem
         base_onnx = exported_here = output_dir / f"{stem}_export.onnx"
         log(f"Exporting to ONNX ({f'fixed batch {batch_size}' if static_batch else 'dynamic batch'}) ...")
         export_onnx(rf_model, base_onnx, batch_size, static_batch)
@@ -271,7 +286,16 @@ def build_bundle(
             layout = layout_from_names_file(class_names_file, num_slots)
 
     iface = read_onnx_interface(base_onnx)
-    onnx_batch, _, model_h, model_w = iface.input_shape
+    onnx_batch, channels, model_h, model_w = iface.input_shape
+    # nvinfer feeds 3-channel RGB frames.
+    if channels != 3:
+        raise BundleError(f"{base_onnx.name} takes {channels} input channels; DeepStream feeds 3-channel RGB "
+                          "frames, so only 3-channel models are supported.")
+    if len(mean) != channels:
+        raise BundleError(f"The model's normalisation has {len(mean)} channels (mean {list(mean)}), its input has "
+                          f"{channels}.")
+    if (tuple(mean), tuple(std)) != (IMAGENET_MEAN, IMAGENET_STD):
+        log(f"Input normalisation from the model (not ImageNet): mean {list(mean)}, std {list(std)}")
     if not isinstance(onnx_batch, str) and onnx_batch != batch_size:
         raise BundleError(f"--batch-size {batch_size} doesn't fit {base_onnx.name}, which has a fixed batch of "
                           f"{onnx_batch}. Use an ONNX with a dynamic batch (dynamic_batch=True), or pass the .pth / "
@@ -293,7 +317,7 @@ def build_bundle(
         if precision == "fp16" and fp16_fix:
             safe = Path(tmp) / "fp16_safe.onnx"
             try:
-                plan = make_fp16_safe(source, safe, calibration_images)
+                plan = make_fp16_safe(source, safe, calibration_images, mean=mean, std=std)
             except Fp16Error as e:
                 raise BundleError(f"{e}. Use --precision fp32 for this model.") from e
             source = safe
@@ -309,7 +333,7 @@ def build_bundle(
         if frame_size:
             frame_w, frame_h = frame_size
             bundle_onnx = output_dir / f"{stem}_{frame_w}x{frame_h}.onnx"
-            add_preprocessing(source, bundle_onnx, frame_height=frame_h, frame_width=frame_w)
+            add_preprocessing(source, bundle_onnx, frame_height=frame_h, frame_width=frame_w, mean=mean, std=std)
             log(f"Preprocessing built into the ONNX for {frame_w}x{frame_h} frames.")
         else:
             bundle_onnx = output_dir / f"{stem}.onnx"
@@ -342,6 +366,8 @@ def build_bundle(
         threshold=threshold,
         precision=precision,
         strongly_typed=strongly_typed,
+        mean=tuple(mean),
+        std=tuple(std),
         background_class_id=layout.background_class_id,
         preprocessing_in_model=frame_size is not None,
         task=task,

@@ -21,7 +21,7 @@ def _const(name: str, value) -> onnx.TensorProto:
 
 def make_detr_onnx(path: Path, size: tuple[int, int] = (32, 32), queries: int = 10, classes: int = 3,
                    batch: int | str = 1, keypoints: tuple[int, int] | None = None, masks: bool = False,
-                   seed: int = 0) -> Path:
+                   seed: int = 0, channels: int = 3) -> Path:
     """An ONNX with RF-DETR's interface: input [N, 3, H, W] -> dets [N, Q, 4], labels [N, Q, C]
     (+ keypoints [N, Q, C*K, D] or masks [N, Q, H/4, W/4]). The outputs are fixed tensors plus a term that depends on
     the input's mean, so a changed input is visible in the outputs."""
@@ -53,7 +53,7 @@ def make_detr_onnx(path: Path, size: tuple[int, int] = (32, 32), queries: int = 
         nodes.append(helper.make_node("Add", [f"{name}_base", signal], [name]))
         outputs.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, shape))
     graph = helper.make_graph(nodes, "fake_rfdetr",
-                              [helper.make_tensor_value_info("input", TensorProto.FLOAT, [batch, 3, h, w])],
+                              [helper.make_tensor_value_info("input", TensorProto.FLOAT, [batch, channels, h, w])],
                               outputs, init)
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", OPSET)])
     model.ir_version = 8

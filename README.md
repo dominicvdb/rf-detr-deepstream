@@ -33,7 +33,7 @@ rfdetr-deepstream build MODEL -o OUT_DIR --frame-size WxH [options]
 - an RF-DETR checkpoint (`.pth` / `.ckpt`), including fine-tuned models. Class names and, for keypoint models, the keypoint layout are read from the checkpoint.
 - an ONNX export (`.onnx`). Detection: add `--class-names FILE` (one name per line) or `--coco` for the official COCO weights. Keypoints: `--keypoints-per-class` (default `0,17`, the official model).
 
-Keypoint models are detected automatically.
+Keypoint models are detected automatically. The input normalisation (mean/std) is read from the model; an ONNX doesn't record it, so RF-DETR's fixed ImageNet values are used. Only 3-channel (RGB) models are supported, since DeepStream feeds RGB frames.
 
 | Option | |
 |---|---|
