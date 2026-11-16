@@ -61,7 +61,10 @@ enable=1
 gpu-id=0
 border-width=2
 text-size=12
-display-mask={1 if masks else 0}
+text-color=1;1;1;1
+text-bg-color=0.3;0.3;0.3;1
+font=Serif
+{"display-mask=1" if masks else ""}
 
 [tiled-display]
 enable=0
@@ -81,6 +84,8 @@ def main() -> int:
     ap.add_argument("--dump", action="store_true", help="dump nvinfer's input tensor (large: W*H*12 bytes per frame)")
     ap.add_argument("--mp4", action="store_true", help="write out.mp4 with the detections drawn")
     ap.add_argument("--tf32", action="store_true", help="allow TF32 (default: NVIDIA_TF32_OVERRIDE=0, for parity)")
+    ap.add_argument("--keep-engine", action="store_true",
+                    help="keep the bundle's engine file (e.g. one built with trtexec) instead of letting nvinfer build")
     args = ap.parse_args()
 
     if not str(args.video).startswith("/opt/") and not Path(args.video).exists():
@@ -88,7 +93,8 @@ def main() -> int:
     run = ROOT / "build" / "ds_runs" / args.name
     shutil.rmtree(run, ignore_errors=True)
     (run / "kitti").mkdir(parents=True)
-    shutil.copytree(args.bundle, run / "bundle", ignore=shutil.ignore_patterns("*.engine", "*.so", "*_dump.txt"))
+    skip = ["*.so", "*_dump.txt"] + ([] if args.keep_engine else ["*.engine"])
+    shutil.copytree(args.bundle, run / "bundle", ignore=shutil.ignore_patterns(*skip))
     cfg_path = run / "bundle" / "config_infer_rfdetr.txt"
     cfg = cfg_path.read_text()
     if args.dump:
