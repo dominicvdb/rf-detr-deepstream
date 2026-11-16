@@ -95,13 +95,15 @@ def overflow_risks(cal: Calibration, limit: float = OVERFLOW_LIMIT) -> list[tupl
 
 
 def calibration_inputs(height: int, width: int, batch: int = 1, images: list[Path] | None = None,
-                       seed: int = 0) -> list[np.ndarray]:
-    """Model-input tensors (normalised, NCHW) for calibration. Without images: synthetic frames (grey, noise,
-    coarse blocks). The largest deviations come from the weights and appear for any input; the input-dependent ones
-    can be somewhat larger on real frames, which the 16x headroom of TARGET_MAX_DEVIATION covers. Pass images to
-    calibrate on real frames instead."""
+                       seed: int = 0, mean=None, std=None) -> list[np.ndarray]:
+    """Model-input tensors (normalised with the model's mean/std, ImageNet by default; NCHW) for calibration.
+    Without images: synthetic frames (grey, noise, coarse blocks). The largest deviations come from the weights and
+    appear for any input; the input-dependent ones can be somewhat larger on real frames, which the 16x headroom of
+    TARGET_MAX_DEVIATION covers. Pass images to calibrate on real frames instead."""
     from rfdetr_deepstream.reference import IMAGENET_MEAN, IMAGENET_STD
 
+    mean = IMAGENET_MEAN if mean is None else mean
+    std = IMAGENET_STD if std is None else std
     if images:
         from PIL import Image
 
@@ -112,8 +114,8 @@ def calibration_inputs(height: int, width: int, batch: int = 1, images: list[Pat
         rgbs = [np.full((height, width, 3), 128, np.uint8),
                 rng.integers(0, 256, (height, width, 3), dtype=np.uint8),
                 np.kron(blocks, np.ones((32, 32, 1)))[:height, :width].astype(np.uint8)]
-    mean = np.array(IMAGENET_MEAN, np.float32).reshape(1, 3, 1, 1)
-    std = np.array(IMAGENET_STD, np.float32).reshape(1, 3, 1, 1)
+    mean = np.array(mean, np.float32).reshape(1, 3, 1, 1)
+    std = np.array(std, np.float32).reshape(1, 3, 1, 1)
     out = []
     for rgb in rgbs:
         x = (rgb.astype(np.float32).transpose(2, 0, 1)[None] / 255.0 - mean) / std
@@ -132,13 +134,14 @@ class Fp16Plan:
     smallest_median: float       # smallest median |x - mean| at a LayerNorm input after scaling
 
 
-def make_fp16_safe(onnx_in: Path, onnx_out: Path, images: list[Path] | None = None) -> Fp16Plan:
-    """Calibrate onnx_in (plain model, input = model size) and write onnx_out with the at-risk LayerNorm inputs
-    scaled. Raises Fp16Error when a tensor outside the LayerNorms would overflow FP16."""
+def make_fp16_safe(onnx_in: Path, onnx_out: Path, images: list[Path] | None = None, mean=None,
+                   std=None) -> Fp16Plan:
+    """Calibrate onnx_in (plain model, input = model size, normalised with mean/std) and write onnx_out with the
+    at-risk LayerNorm inputs scaled. Raises Fp16Error when a tensor outside the LayerNorms would overflow FP16."""
     model = onnx.load(str(onnx_in))
     dims = [d.dim_value for d in model.graph.input[0].type.tensor_type.shape.dim]
     batch = dims[0] or 1
-    cal = calibrate(onnx_in, calibration_inputs(dims[2], dims[3], batch, images))
+    cal = calibrate(onnx_in, calibration_inputs(dims[2], dims[3], batch, images, mean=mean, std=std))
     risky = overflow_risks(cal)
     if risky:
         lines = "; ".join(f"{node or t}: {m:.0f}" for t, node, m in risky[:5])

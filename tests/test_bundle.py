@@ -1,13 +1,18 @@
 """Bundle generation from an ONNX: files, class layout, nvinfer config, errors."""
 
 import configparser
+from types import SimpleNamespace
 
 import numpy as np
+import onnx
 import onnxruntime as ort
 import pytest
+from onnx import numpy_helper
 
 from conftest import make_detr_onnx
-from rfdetr_deepstream.bundle import BundleError, build_bundle, check_onnx, read_onnx_interface
+from rfdetr_deepstream.bundle import (BundleError, ClassLayout, build_bundle, check_onnx, normalization_from_rfdetr,
+                                      read_onnx_interface)
+from rfdetr_deepstream.reference import IMAGENET_MEAN, IMAGENET_STD
 
 
 def _config(path):
@@ -103,6 +108,45 @@ def test_class_names_count_must_fit(tmp_path, detr_onnx):
     names.write_text("a\n")  # 1 name for 3 slots
     with pytest.raises(BundleError, match="3 logits slots"):
         _build(tmp_path, detr_onnx, class_names_file=names)
+
+
+def test_only_rgb_models(tmp_path):
+    with pytest.raises(BundleError, match="3-channel"):
+        _build(tmp_path, make_detr_onnx(tmp_path / "gray.onnx", channels=1), coco=True)
+
+
+def test_normalization_from_rfdetr():
+    assert normalization_from_rfdetr(SimpleNamespace()) == (IMAGENET_MEAN, IMAGENET_STD)
+    model = SimpleNamespace(means=[0.5, 0.5, 0.5], stds=[0.25, 0.25, 0.25])
+    assert normalization_from_rfdetr(model) == ((0.5, 0.5, 0.5), (0.25, 0.25, 0.25))
+    with pytest.raises(BundleError, match="positive"):
+        normalization_from_rfdetr(SimpleNamespace(means=[0.5] * 3, stds=[0.25, 0.0, 0.25]))
+
+
+@pytest.fixture
+def custom_norm_model(tmp_path, monkeypatch):
+    """A 'checkpoint' whose normaliser isn't ImageNet; export gives the synthetic ONNX."""
+    import rfdetr_deepstream.bundle as bundle
+
+    model = SimpleNamespace(means=[0.5, 0.4, 0.3], stds=[0.2, 0.25, 0.3])
+    monkeypatch.setattr(bundle, "load_rfdetr", lambda name: model)
+    monkeypatch.setattr(bundle, "export_onnx", lambda m, out, *a: make_detr_onnx(out))
+    monkeypatch.setattr(bundle, "layout_from_rfdetr", lambda m, n, t: ClassLayout(["a", "b", ""], 2))
+    return model
+
+
+def test_model_normalization_in_onnx(tmp_path, custom_norm_model):
+    out = build_bundle("nano", tmp_path / "bundle", frame_size=(64, 48), log=lambda *_: None)
+    init = {t.name: numpy_helper.to_array(t) for t in onnx.load(str(out / "rfdetr-nano_64x48.onnx")).graph.initializer}
+    np.testing.assert_allclose(init["pre_mean"].ravel(), custom_norm_model.means, rtol=1e-6)
+    np.testing.assert_allclose(init["pre_std"].ravel(), custom_norm_model.stds, rtol=1e-6)
+
+
+def test_model_normalization_in_nvinfer_config(tmp_path, custom_norm_model):
+    out = build_bundle("nano", tmp_path / "bundle", log=lambda *_: None)
+    p = _config(out / "config_infer_rfdetr.txt")["property"]
+    np.testing.assert_allclose([float(v) for v in p["offsets"].split(";")], [127.5, 102.0, 76.5], rtol=1e-4)
+    assert float(p["net-scale-factor"]) == pytest.approx(1 / (255 * 0.25), rel=1e-4)
 
 
 def test_check_onnx_tasks(tmp_path):
