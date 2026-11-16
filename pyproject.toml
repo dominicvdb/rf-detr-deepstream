@@ -14,7 +14,7 @@ dependencies = [
 # Needed to build from a pretrained name or a .pth checkpoint (exports to ONNX with rfdetr).
 torch = ["rfdetr[onnx]", "torch", "torchvision"]
 # Parity tests and development scripts.
-dev = ["rfdetr[onnx]", "torch", "torchvision", "onnxruntime", "pillow", "opencv-python-headless", "av"]
+dev = ["rfdetr[onnx]", "torch", "torchvision", "onnxruntime", "pillow", "opencv-python-headless", "av", "pytest"]
 
 [project.scripts]
 rfdetr-deepstream = "rfdetr_deepstream.cli:main"
@@ -25,3 +25,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rfdetr_deepstream"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
