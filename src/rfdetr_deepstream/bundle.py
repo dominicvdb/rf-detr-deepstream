@@ -26,6 +26,7 @@ from pathlib import Path
 import onnx
 
 from rfdetr_deepstream.deepstream import NvinferConfig, coco_sparse_labels, write_labels, write_nvinfer_config
+from rfdetr_deepstream.fp16 import make_fp16_safe
 from rfdetr_deepstream.onnx_patch import add_preprocessing, fold_constants
 
 PRETRAINED = {
@@ -224,6 +225,8 @@ def build_bundle(
     keypoints_per_class: list[int] | None = None,
     batch_size: int = 1,
     static_batch: bool = False,
+    fp16_fix: bool = True,
+    calibration_images: list[Path] | None = None,
     log=print,
 ) -> Path:
     if batch_size < 1:
@@ -285,6 +288,15 @@ def build_bundle(
             source = Path(tmp) / "folded.onnx"
             fold_constants(base_onnx, source)
             log("Constant subgraphs folded (required for the keypoint model on TensorRT 8.6).")
+        if precision == "fp16" and fp16_fix:
+            safe = Path(tmp) / "fp16_safe.onnx"
+            scales = make_fp16_safe(source, safe, calibration_images)
+            source = safe
+            calibrated = f"{len(calibration_images)} images" if calibration_images else "synthetic frames"
+            log(f"FP16: scaled the input of {len(scales)} LayerNorm(s) at risk of FP16 overflow in their variance "
+                f"(calibrated on {calibrated}):")
+            for name, divisor in scales.items():
+                log(f"  1/{divisor:<4d} {name}")
         if frame_size:
             frame_w, frame_h = frame_size
             bundle_onnx = output_dir / f"{stem}_{frame_w}x{frame_h}.onnx"
@@ -299,8 +311,9 @@ def build_bundle(
     if exported_here is not None and exported_here.exists():
         exported_here.unlink()
 
-    if precision == "fp16":
-        log("WARNING: FP16 is known to overflow in some transformer layers of RF-DETR, which degrades detections.")
+    if precision == "fp16" and not fp16_fix:
+        log("WARNING: FP16 without the LayerNorm fix: some RF-DETR LayerNorms overflow in FP16, which can lose most "
+            "detections (see scripts/fp16_simulate.py).")
 
     # 3. C++ source (built on the target), labels, config, README.
     write_labels(output_dir / "labels.txt", layout.names)

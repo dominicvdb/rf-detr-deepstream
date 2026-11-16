@@ -42,8 +42,14 @@ Keypoint models are detected automatically.
 | `--static-batch` | Fixed batch of `--batch-size` instead of a dynamic one. Needed for keypoint models with batch > 1 on DeepStream 7.0. |
 | `--threshold 0.5` | Detection threshold. |
 | `--class-names FILE` | Class names, one per line. Overrides a checkpoint's names. |
-| `--precision fp32\|fp16` | TensorRT precision. Use FP32 for now (see Limitations). |
+| `--precision fp32\|fp16` | TensorRT precision (default FP32). FP16 makes the model FP16-safe first, see [FP16](#fp16). `--no-fp16-fix` skips that (to compare); `--calibration-images IMG ...` measures on your frames instead of synthetic ones. |
 | `--parser-lib PATH` | Detection: use an already built parser library instead of shipping its source. |
+
+### FP16
+
+Plain RF-DETR breaks in FP16. A few LayerNorms (decoder layer 0 `norm1`, the projector's `cv1/bn`, and some backbone layers) get inputs whose values fit FP16 but whose squared deviations, used in the variance, go far beyond FP16's maximum of 65,504. The variance overflows and those layers' outputs collapse, which can cost most detections. With `--precision fp16`, the build divides the input of each at-risk LayerNorm by a power of two. A LayerNorm gives the same result for a scaled input, apart from the ε term (10⁻⁶ × s², negligible), so the FP32 model is unchanged, but the squares stay at least 16× below the limit. The at-risk layers are found by running the model on synthetic frames (or `--calibration-images`). The largest values come from the weights and appear for any input.
+
+`scripts/fp16_ranges.py` shows the LayerNorm ranges of a model. `scripts/fp16_simulate.py` simulates FP16 in ONNX Runtime (every tensor rounded to FP16, LayerNorms computed step by step in FP16) and compares plain FP16, FP16 with the fix, and FP32 on labelled frames. This is a simulation of FP16, not TensorRT itself. It hasn't been run on a GPU yet (see Limitations).
 
 ## What's in a bundle
 
@@ -117,13 +123,13 @@ Rough speed on an RTX 4060, FP32: RF-DETR Nano ~150 FPS for one 720p stream, ~19
 
 ## Limitations
 
-- **FP32 only for now.** FP16 runs, but some transformer layers overflow and detections degrade. A fix (keeping those layers in FP32) is planned.
+- **FP16 hasn't been run in TensorRT yet.** The fix is verified in an FP16 simulation (see [FP16](#fp16)). Until it's checked on a GPU, FP32 is the safe choice.
 - **Fixed input size.** The bundle is built for one frame size; all streams go through `nvstreammux` at that size.
 - **Segmentation models** aren't supported yet.
 - **Tested models:** RF-DETR Nano and the official `RFDETRKeypointPreview` checkpoint. The other sizes and fine-tuned checkpoints go through the same code but haven't been run in DeepStream yet.
 
 ## Development
 
-`pytest` runs the test suite in a few seconds, without DeepStream or a GPU (`pip install -e ".[dev]"`; the parser tests also need a C++ compiler). It uses small synthetic ONNX models with RF-DETR's interface and covers the reference decoder (against rfdetr's own), the preprocessing built into the ONNX (against `predict()`'s), bundle generation and the nvinfer config, the C++ parser (compiled with a stand-in for DeepStream's header, against the reference), and the video colour conversion.
+`pytest` runs the test suite in a few seconds, without DeepStream or a GPU (`pip install -e ".[dev]"`; the parser tests also need a C++ compiler). It uses small synthetic ONNX models with RF-DETR's interface and covers the reference decoder (against rfdetr's own), the preprocessing built into the ONNX (against `predict()`'s), bundle generation and the nvinfer config, the C++ parser (compiled with a stand-in for DeepStream's header, against the reference), the video colour conversion, and the FP16 LayerNorm fix.
 
 `scripts/test_deepstream_version.py --tag ds9.2 --image <DeepStream image>` builds the libraries in a DeepStream container, runs detection and keypoint pipelines, and compares every frame with RF-DETR in Python. Results per version are in [`results/`](results/). The other scripts in `scripts/` are the individual checks and diagnostics it uses.
