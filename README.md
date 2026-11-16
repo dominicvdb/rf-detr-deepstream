@@ -64,6 +64,8 @@ Measured on `sample_720p.mp4` (1442 frames, RTX 4060), compared frame by frame w
 
 DeepStream 9.2, 1280×720 bundles; GPU time from `trtexec`. On DeepStream 8.0 (engine from `trtexec`) the FP16 results are within 0.05 percentage points of these. The unmatched detections are close to the threshold: FP16 rounding moves their score across it.
 
+All five pretrained detection models on DeepStream 7.1, 8.0, 9.0 and 9.2 (first 100 frames of the same video, 20 runs): every engine built as FP16, 99.5–100% of the FP32 detections matched, box IoU 0.993–0.995. GPU time per 720p frame in FP16: Nano 2.2 ms, Small 3.3 ms, Medium 3.9 ms, Base 3.9 ms, Large 4.8 ms.
+
 **DeepStream versions:**
 - **9.0 and later:** nothing to do; the config has `strongly-typed=1`.
 - **7.1 and 8.0:** nvinfer has no strongly typed option. Build the engine once on the target with `trtexec --stronglyTyped`; the bundle's README.txt has the exact command. Without it nvinfer builds an FP32 engine: same detections as FP32, no speedup.
@@ -136,22 +138,25 @@ Things to know:
 | Keypoints | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Detection, batch > 1 | ✅ | | | | ✅ |
 | Keypoints, batch > 1 | ✅ `--static-batch`¹ | | | | ✅ |
-| Detection, FP16 | ❌ | | ✅ `trtexec`² | | ✅ |
+| Detection, FP16 | ❌ | ✅ `trtexec`² | ✅ `trtexec`² | ✅ | ✅ |
+| Keypoints, FP16 | ❌ | engine builds³ | engine builds³ | engine builds³ | engine builds³ |
 
 Tested on x86 with an RTX 4060 (WSL2). Empty cells weren't tested; they use the same code as the versions around them. On Jetson, both libraries compile in the DeepStream 7.0 and 7.1 Jetson images but haven't been run on a device yet.
 
 ¹ TensorRT 8.6 can't build the keypoint model with a dynamic batch. With `--static-batch`, the batch-2 engine builds on an 8 GB GPU (not yet run end to end); batch 4 runs out of memory there.
 
-² Engine built with the `trtexec --stronglyTyped` command from the bundle's README.txt. FP16 was tested with Nano and Medium, batch 1.
+² Engine built with the `trtexec --stronglyTyped` command from the bundle's README.txt. FP16 detection was tested with all pretrained detection models (Nano, Small, Medium, Large, Base), batch 1.
+
+³ The FP16 engine builds (strongly typed, FP16 size); keypoint accuracy in FP16 hasn't been measured yet.
 
 Rough speed on an RTX 4060, FP32: RF-DETR Nano ~150 FPS for one 720p stream, ~190 FPS in total with 4 streams; the keypoint model (XLarge backbone) ~30 FPS at 1080p.
 
 ## Limitations
 
-- **FP16** needs TensorRT 10 (DeepStream 7.1 or later), and on 7.1 and 8.0 a `trtexec` step. Keypoint models and batch > 1 haven't been run in FP16 yet. FP16 results are close to FP32 but not identical (see [FP16](#fp16)).
+- **FP16** needs TensorRT 10 (DeepStream 7.1 or later), and on 7.1 and 8.0 a `trtexec` step. Keypoint accuracy and batch > 1 haven't been measured in FP16 yet. FP16 results are close to FP32 but not identical (see [FP16](#fp16)).
 - **Fixed input size.** The bundle is built for one frame size; all streams go through `nvstreammux` at that size.
 - **Segmentation models** aren't supported yet.
-- **Tested models:** RF-DETR Nano and the official `RFDETRKeypointPreview` checkpoint. The other sizes and fine-tuned checkpoints go through the same code but haven't been run in DeepStream yet.
+- **Tested models:** all pretrained detection models (Nano, Small, Medium, Large, Base) in FP16, Nano and Medium also in FP32, and the official `RFDETRKeypointPreview` checkpoint. Fine-tuned checkpoints go through the same code but haven't been run in DeepStream yet.
 
 ## Development
 
