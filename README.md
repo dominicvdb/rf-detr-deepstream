@@ -2,7 +2,7 @@
 
 Run [RF-DETR](https://github.com/roboflow/rf-detr) detection and keypoint (pose) models in NVIDIA DeepStream.
 
-`rfdetr-deepstream build` turns an RF-DETR model into a self-contained DeepStream folder: an ONNX model with RF-DETR's preprocessing built in, an nvinfer config, labels, and the C++ source of the output parser. Copy the folder to the target, run `make`, and point nvinfer at the config. Detections match RF-DETR's own `predict()`.
+`rfdetr-deepstream build` turns an RF-DETR model into a self-contained DeepStream folder: an ONNX model with RF-DETR's preprocessing built in, an nvinfer config, labels, and the C++ source of the output parser. Copy the folder to the target, run `make`, and point nvinfer at the config. In FP32, detections match RF-DETR's own `predict()` exactly; FP16 (DeepStream 7.1 and later) is 2.4–4.5× faster and keeps 99.5–100% of the detections.
 
 ```bash
 rfdetr-deepstream build nano --frame-size 1280x720 -o bundle/
@@ -47,33 +47,30 @@ Keypoint models are detected automatically. The input normalisation (mean/std) i
 
 ### FP16
 
-`--precision fp16` writes an FP16 ONNX and has TensorRT build it **strongly typed**: every layer runs in the type the ONNX gives it. Only the preprocessing built into the ONNX stays FP32. In nvinfer's normal FP16 mode TensorRT picks FP16 or FP32 per layer by measured speed, so the same ONNX can give an FP16 engine on one build and a mostly FP32 one (FP32 size, FP32 speed) on the next. Strong typing makes every build the same.
-
-Before converting, the build runs the model in FP32 on calibration frames (synthetic, or `--calibration-images`) and:
-- divides the input of each LayerNorm whose squared deviations would overflow FP16 (above 65,504) by a power of two. A LayerNorm gives the same result for a scaled input, so the FP32 model is unchanged. RF-DETR Nano and Medium have 8 such LayerNorms (decoder layer 0 `norm1`, the projector's `cv1/bn`, late backbone layers). A LayerNorm whose small values would lose FP16 precision after scaling stays FP32 instead;
-- stops with an error if any other tensor gets within 4× of FP16's maximum (none does in Nano or Medium; the largest activation is about 1,100).
-
-Measured on `sample_720p.mp4` (1442 frames, RTX 4060), compared frame by frame with RF-DETR in ONNX Runtime (FP32):
-
-| | Detections matched | Box IoU (mean) | GPU time per frame |
-|---|---|---|---|
-| Nano FP32 | 100.00% | 1.0000 | 5.4 ms |
-| Nano FP16 | 99.44% | 0.9930 | 2.2 ms |
-| Medium FP32 | 100.00% | 1.0000 | 12.8 ms |
-| Medium FP16 | 99.69% | 0.9920 | 3.9 ms |
-
-DeepStream 9.2, 1280×720 bundles; GPU time from `trtexec`. On DeepStream 8.0 (engine from `trtexec`) the FP16 results are within 0.05 percentage points of these. The unmatched detections are close to the threshold: FP16 rounding moves their score across it.
-
-All five pretrained detection models on DeepStream 7.1, 8.0, 9.0 and 9.2 (first 100 frames of the same video, 20 runs): every engine built as FP16, 99.5–100% of the FP32 detections matched, box IoU 0.993–0.995. GPU time per 720p frame in FP16: Nano 2.2 ms, Small 3.3 ms, Medium 3.9 ms, Base 3.9 ms, Large 4.8 ms.
+`rfdetr-deepstream build MODEL --frame-size WxH --precision fp16 -o DIR` gives a bundle that runs 2.4–4.5× faster than FP32 with nearly the same detections.
 
 **DeepStream versions:**
-- **9.0 and later:** nothing to do; the config has `strongly-typed=1`.
-- **7.1 and 8.0:** nvinfer has no strongly typed option. Build the engine once on the target with `trtexec --stronglyTyped`; the bundle's README.txt has the exact command. Without it nvinfer builds an FP32 engine: same detections as FP32, no speedup.
-- **7.0:** FP16 isn't supported. TensorRT 8.6 builds FP16 engines that lose almost all detections (1.4% left on Nano, with or without the fixes above).
+- **9.0 and later:** nothing to do.
+- **7.1 and 8.0:** build the engine once on the target with `trtexec --stronglyTyped`; the bundle's README.txt has the exact command. Without it nvinfer builds an FP32 engine: same detections as FP32, no speedup.
+- **7.0:** not supported. TensorRT 8.6 builds FP16 engines that lose almost all detections.
 
-TensorRT refuses the FP16 flag on a strongly typed network, so the config has `network-mode=0` and the engine file name ends in `_fp32` although the engine is FP16. An FP16 engine is about half the size of an FP32 one.
+**Measured** on an RTX 4060 with all pretrained detection models (1280×720 bundles, DeepStream 7.1, 8.0, 9.0 and 9.2, first 100 frames of `sample_720p.mp4`), compared frame by frame with RF-DETR in ONNX Runtime (FP32):
 
-`scripts/fp16_ranges.py` shows the LayerNorm ranges of a model, and `scripts/fp16_simulate.py` simulates FP16 in ONNX Runtime.
+| Model | Detections matched (FP16) | Box IoU (FP16) | GPU time FP32 | GPU time FP16 | Speedup |
+|---|---|---|---|---|---|
+| Nano | 99.5–99.9% | 0.995 | 5.2 ms | 2.1 ms | 2.4× |
+| Small | 99.7–99.8% | 0.994 | 9.8 ms | 3.3 ms | 3.0× |
+| Medium | 99.7–100% | 0.994 | 13.2 ms | 3.9 ms | 3.4× |
+| Base | 99.8–100% | 0.994 | 13.5 ms | 3.9 ms | 3.4× |
+| Large | 99.6–99.8% | 0.993 | 21.6 ms | 4.8 ms | 4.5× |
+
+The range is over the four DeepStream versions; GPU time per frame from `trtexec`. FP32 matches 100% (checked on Nano and Medium over the full 1442 frames). The detections FP16 misses are close to the threshold: rounding moves their score across it. An FP16 engine is about half the size of an FP32 one, a quick check that the engine really is FP16.
+
+**How it works.** The bundle's ONNX is converted to FP16 (only the built-in preprocessing stays FP32) and built **strongly typed**: TensorRT runs every layer in the type the ONNX gives it. In nvinfer's normal FP16 mode TensorRT picks FP16 or FP32 per layer by measured speed, so the same ONNX can give an FP16 engine on one build and a mostly FP32 one on the next. Before converting, the build runs the model in FP32 on calibration frames (synthetic, or `--calibration-images`) and:
+- divides the input of each LayerNorm whose squared deviations would overflow FP16 (above 65,504) by a power of two. A LayerNorm gives the same result for a scaled input, so the FP32 model is unchanged. The pretrained models have 8 such LayerNorms (Base: 2). A LayerNorm whose small values would lose FP16 precision after scaling stays FP32 instead;
+- stops with an error if any other tensor gets within 4× of FP16's maximum (none does in the pretrained models).
+
+TensorRT refuses the FP16 flag on a strongly typed network, so the config has `network-mode=0` and `strongly-typed=1`, and the engine file name ends in `_fp32` although the engine is FP16. `scripts/fp16_ranges.py` shows the LayerNorm ranges of a model.
 
 ## What's in a bundle
 
@@ -149,7 +146,7 @@ Tested on x86 with an RTX 4060 (WSL2). Empty cells weren't tested; they use the 
 
 ³ The FP16 engine builds (strongly typed, FP16 size); keypoint accuracy in FP16 hasn't been measured yet.
 
-Rough speed on an RTX 4060, FP32: RF-DETR Nano ~150 FPS for one 720p stream, ~190 FPS in total with 4 streams; the keypoint model (XLarge backbone) ~30 FPS at 1080p.
+Rough pipeline speed on an RTX 4060 (`deepstream-app`, one 720p stream): Nano ~150 FPS in FP32 and ~300 FPS in FP16, Medium ~75 FPS in FP32 and ~200 FPS in FP16. Nano FP32 with 4 streams: ~190 FPS in total. The keypoint model (XLarge backbone): ~30 FPS at 1080p in FP32.
 
 ## Limitations
 

@@ -3,6 +3,7 @@ name = "rfdetr-deepstream"
 version = "0.1.0"
 description = "Run RF-DETR models in NVIDIA DeepStream: model-to-bundle tool and nvinfer parser"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
