@@ -1,0 +1,22 @@
+{
+  "frames": 1442,
+  "n_a": 12806,
+  "n_b": 12776,
+  "matched": 12689,
+  "match_rate": 0.9908636576604717,
+  "iou_mean": 0.9919343715684341,
+  "iou_p5": 0.9787454149532779,
+  "dscore_mean": 0.002860744561132286,
+  "dscore_p95": 0.009091560747680671,
+  "dscore_max": 0.23569515015640263,
+  "only_a": 117,
+  "only_b": 87,
+  "unmatched_near_threshold": 0.8872549019607843,
+  "mask_iou_same_box_mean": 0.9969964969945908,
+  "mask_iou_same_box_p5": 0.9913610909276263,
+  "mask_iou_same_box_min": 0.9415807560137457,
+  "mask_iou_mean": 0.9945535015472206,
+  "mask_iou_p5": 0.9829689410266236,
+  "mask_iou_min": 0.3204633204633205,
+  "mask_shape_mismatch": 0
+}

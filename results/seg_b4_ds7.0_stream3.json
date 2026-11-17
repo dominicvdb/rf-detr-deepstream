@@ -1,0 +1,19 @@
+{
+  "frames": 1442,
+  "n_a": 777,
+  "n_b": 777,
+  "matched": 777,
+  "match_rate": 1.0,
+  "iou_mean": 0.9999909284821789,
+  "iou_p5": 0.9999957665939847,
+  "dscore_mean": 3.2327066947318224e-05,
+  "dscore_p95": 9.49934219356401e-06,
+  "dscore_max": 0.003949615538024864,
+  "only_a": 0,
+  "only_b": 0,
+  "unmatched_near_threshold": null,
+  "mask_iou_mean": 0.9999928010334557,
+  "mask_iou_p5": 0.9999956345700636,
+  "mask_iou_min": 0.9989150152701555,
+  "mask_shape_mismatch": 0
+}
