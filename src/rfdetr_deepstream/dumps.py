@@ -44,3 +44,22 @@ def read_pose_dump(path: Path):
 
 def pose_dump_path(dump_dir: Path, frame: int, stream: int = 0) -> Path:
     return Path(dump_dir) / f"{stream:02d}_{frame:06d}.txt"
+
+
+def read_mask_dump(objects_txt: Path, masks_bin: Path) -> dict[tuple[int, int], list[dict]]:
+    """scripts/mask_probe output: {(source_id, frame_num): [object, ...]}. Each object has xyxy (nvinfer's
+    rect_params), class_id, confidence, threshold and mask: a float32 (mask_height, mask_width) array, or None."""
+    blob = np.fromfile(masks_bin, dtype=np.uint8)
+    frames: dict[tuple[int, int], list[dict]] = {}
+    for line in Path(objects_txt).read_text().splitlines():
+        t = line.split()
+        source, frame, cls = int(t[0]), int(t[1]), int(t[2])
+        conf, left, top, width, height = (float(v) for v in t[3:8])
+        mask_w, mask_h, threshold, offset = int(t[8]), int(t[9]), float(t[10]), int(t[11])
+        mask = None
+        if mask_w and mask_h:
+            mask = blob[offset:offset + 4 * mask_w * mask_h].view(np.float32).reshape(mask_h, mask_w)
+        frames.setdefault((source, frame), []).append(
+            {"xyxy": [left, top, left + width, top + height], "class_id": cls, "confidence": conf,
+             "threshold": threshold, "mask": mask})
+    return frames

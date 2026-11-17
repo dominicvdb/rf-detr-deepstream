@@ -142,25 +142,27 @@ Things to know:
 | Keypoints, batch > 1 | ✅ `--static-batch`¹ | | | | ✅ |
 | Detection, FP16 | ❌ | ✅ `trtexec`² | ✅ `trtexec`² | ✅ | ✅ |
 | Keypoints, FP16 | ❌ | engine builds³ | engine builds³ | engine builds³ | engine builds³ |
-| Segmentation | ⁴ | ⁴ | ⁴ | ⁴ | ⁴ |
+| Segmentation | ✅ | | | | ✅ |
+| Segmentation, batch > 1 | ✅ | | | | ✅ |
+| Segmentation, FP16 | ❌ | ✅ `trtexec`² | ✅ `trtexec`² | ✅ | ✅ |
 
 Tested on x86 with an RTX 4060 (WSL2). Empty cells weren't tested; they use the same code as the versions around them. On Jetson, both libraries compile in the DeepStream 7.0 and 7.1 Jetson images but haven't been run on a device yet.
 
 ¹ TensorRT 8.6 can't build the keypoint model with a dynamic batch. With `--static-batch`, the batch-2 engine builds on an 8 GB GPU (not yet run end to end); batch 4 runs out of memory there.
 
-² Engine built with the `trtexec --stronglyTyped` command from the bundle's README.txt. FP16 detection was tested with all pretrained detection models (Nano, Small, Medium, Large, Base), batch 1.
+² Engine built with the `trtexec --stronglyTyped` command from the bundle's README.txt. FP16 detection was tested with all pretrained detection models (Nano, Small, Medium, Large, Base), batch 1. FP16 segmentation: Nano only (see ⁴).
 
 ³ The FP16 engine builds (strongly typed, FP16 size); keypoint accuracy in FP16 hasn't been measured yet.
 
-⁴ Not run in DeepStream yet. Checked without DeepStream (`scripts/check_segmentation_local.py`): the bundle ONNX against rfdetr's own post-processing, and the C++ parser (compiled with a stand-in for DeepStream's header) against the Python reference, boxes and mask pixels.
+⁴ Instance masks as nvinfer attaches them, compared with RF-DETR in Python (FP32) on 1442 frames of a 720p video (Nano, 1280x720, TF32 off): in FP32, 100% of the detections match and the mask IoU is 0.99999 on average (minimum 0.97 on 7.0, 0.99 on 9.2); with 4 different streams in one batch the same holds for every stream. In FP16 (7.1 to 9.2, all the same within 0.1%): 99.1–99.3% of the detections match (the unmatched ones sit at the score threshold), box IoU 0.992, mask IoU 0.995 on average (5th percentile 0.983; 0.997 where the boxes agree, so the mask head is not the weak point), 2.2–2.5x faster. Not tested: other model sizes, fine-tuned checkpoints.
 
-Rough pipeline speed on an RTX 4060 (`deepstream-app`, one 720p stream): Nano ~150 FPS in FP32 and ~300 FPS in FP16, Medium ~75 FPS in FP32 and ~200 FPS in FP16. Nano FP32 with 4 streams: ~190 FPS in total. The keypoint model (XLarge backbone): ~30 FPS at 1080p in FP32.
+Rough pipeline speed on an RTX 4060 (`deepstream-app`, one 720p stream): Nano ~150 FPS in FP32 and ~300 FPS in FP16, Medium ~75 FPS in FP32 and ~200 FPS in FP16. Nano FP32 with 4 streams: ~190 FPS in total. The keypoint model (XLarge backbone): ~30 FPS at 1080p in FP32. Segmentation Nano (1280x720, FP32): ~107 FPS, against ~166 FPS for detection Nano in the same pipeline without encode.
 
 ## Limitations
 
 - **FP16** needs TensorRT 10 (DeepStream 7.1 or later), and on 7.1 and 8.0 a `trtexec` step. Keypoint accuracy and batch > 1 haven't been measured in FP16 yet. FP16 results are close to FP32 but not identical (see [FP16](#fp16)).
 - **Fixed input size.** The bundle is built for one frame size; all streams go through `nvstreammux` at that size.
-- **Segmentation hasn't been run in DeepStream yet** (see ⁴ above).
+- **Segmentation** (see ⁴): only Nano is tested. Don't set `topk` in the nvinfer config: nvinfer would drop objects without freeing their masks.
 - **Tested models:** all pretrained detection models (Nano, Small, Medium, Large, Base) in FP16, Nano and Medium also in FP32, and the official `RFDETRKeypointPreview` checkpoint. Fine-tuned checkpoints go through the same code but haven't been run in DeepStream yet.
 
 ## Development
