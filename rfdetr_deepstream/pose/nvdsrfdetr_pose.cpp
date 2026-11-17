@@ -131,7 +131,8 @@ class RfdetrPose : public DSCustomLibraryBase {
 
  private:
   bool decodeFrame(const NvDsInferTensorMeta* meta, float frameW, float frameH, std::vector<Detection>& out);
-  void attachFrame(NvDsBatchMeta* batchMeta, NvDsFrameMeta* frameMeta, const std::vector<Detection>& dets);
+  void attachFrame(NvDsBatchMeta* batchMeta, NvDsFrameMeta* frameMeta, const std::vector<Detection>& dets,
+                   float frameW, float frameH);
   void dumpFrame(const NvDsFrameMeta* frameMeta, const std::vector<Detection>& dets);
 
   float threshold_ = 0.5f;
@@ -222,7 +223,7 @@ BufferResult RfdetrPose::ProcessBuffer(GstBuffer* inbuf) {
 
     std::vector<Detection> dets;
     if (!decodeFrame(tensorMeta, frameW, frameH, dets)) return BufferResult::Buffer_Error;
-    attachFrame(batchMeta, frameMeta, dets);
+    attachFrame(batchMeta, frameMeta, dets, frameW, frameH);
     if (!dumpDir_.empty()) dumpFrame(frameMeta, dets);
   }
   return BufferResult::Buffer_Ok;
@@ -263,6 +264,10 @@ bool RfdetrPose::decodeFrame(const NvDsInferTensorMeta* meta, float frameW, floa
                numClasses, kmax);
     return false;
   }
+  if (kmax > 0 && d < 3) {
+    g_printerr("rfdetr_pose: keypoints tensor has %u values per keypoint, expected at least 3 (x, y, logit).\n", d);
+    return false;
+  }
   const bool fuse = traceAlpha_ > 0.0f && d >= 7;
 
   const float* boxes = hostBuffer(meta, boxesLayer);
@@ -276,7 +281,8 @@ bool RfdetrPose::decodeFrame(const NvDsInferTensorMeta* meta, float frameW, floa
   std::vector<float> scores(numPairs);
   for (unsigned int i = 0; i < numPairs; ++i) {
     order[i] = i;
-    scores[i] = sigmoid(logits[i]);
+    // NaN logits (e.g. FP16 overflow) would break the sort order; they sort last and are skipped below.
+    scores[i] = std::isnan(logits[i]) ? -1.0f : sigmoid(logits[i]);
   }
   const unsigned int k = std::min(numQueries, numPairs);
   std::partial_sort(order.begin(), order.begin() + k, order.end(), [&](unsigned int a, unsigned int b) {
@@ -289,6 +295,7 @@ bool RfdetrPose::decodeFrame(const NvDsInferTensorMeta* meta, float frameW, floa
     const unsigned int q = order[r] / numClasses;
     const unsigned int c = order[r] % numClasses;
     const float score = scores[order[r]];
+    if (score < 0.0f) continue;
     const unsigned int n = keypointsPerClass_[c];
     const float* kp = keypoints + (static_cast<size_t>(q) * numClasses * kmax + static_cast<size_t>(c) * kmax) * d;
 
@@ -310,6 +317,7 @@ bool RfdetrPose::decodeFrame(const NvDsInferTensorMeta* meta, float frameW, floa
     det.y1 = std::clamp((b[1] - b[3] / 2) * frameH, 0.0f, frameH);
     det.x2 = std::clamp((b[0] + b[2] / 2) * frameW, 0.0f, frameW);
     det.y2 = std::clamp((b[1] + b[3] / 2) * frameH, 0.0f, frameH);
+    if (!std::isfinite(det.x1) || !std::isfinite(det.y1) || !std::isfinite(det.x2) || !std::isfinite(det.y2)) continue;
     for (unsigned int j = 0; j < n; ++j) {
       det.kx.push_back(kp[j * d + 0] * frameW);
       det.ky.push_back(kp[j * d + 1] * frameH);
@@ -320,7 +328,8 @@ bool RfdetrPose::decodeFrame(const NvDsInferTensorMeta* meta, float frameW, floa
   return true;
 }
 
-void RfdetrPose::attachFrame(NvDsBatchMeta* batchMeta, NvDsFrameMeta* frameMeta, const std::vector<Detection>& dets) {
+void RfdetrPose::attachFrame(NvDsBatchMeta* batchMeta, NvDsFrameMeta* frameMeta, const std::vector<Detection>& dets,
+                             float frameW, float frameH) {
   NvDsDisplayMeta* display = nullptr;
   auto displayMeta = [&]() -> NvDsDisplayMeta* {
     if (display == nullptr || display->num_circles >= MAX_ELEMENTS_IN_DISPLAY_META ||
@@ -383,8 +392,11 @@ void RfdetrPose::attachFrame(NvDsBatchMeta* batchMeta, NvDsFrameMeta* frameMeta,
     }
 
     if (!draw_ || det.kx.empty()) continue;
+    // Off-frame keypoints are common (people partly out of view) and are not drawn: nvdsosd takes unsigned
+    // in-frame pixel coordinates. NaN coordinates fail these comparisons too.
     const auto visible = [&](int j) {
-      return j >= 0 && static_cast<size_t>(j) < det.kx.size() && det.kc[j] >= keypointThreshold_;
+      return j >= 0 && static_cast<size_t>(j) < det.kx.size() && det.kc[j] >= keypointThreshold_ &&
+             det.kx[j] >= 0.0f && det.kx[j] < frameW && det.ky[j] >= 0.0f && det.ky[j] < frameH;
     };
     for (const auto& [a, b] : skeleton_) {
       if (!visible(a) || !visible(b)) continue;
