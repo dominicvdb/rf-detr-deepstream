@@ -87,6 +87,6 @@ def parser_harness(tmp_path_factory) -> Path:
         pytest.skip("no C++ compiler")
     out = tmp_path_factory.mktemp("harness") / "harness"
     subprocess.run([cxx, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", f"-I{ROOT / 'tests/cpp'}",
-                    str(ROOT / "src/rfdetr_deepstream/parser/nvdsparsebbox_rfdetr.cpp"),
+                    str(ROOT / "rfdetr_deepstream/parser/nvdsparsebbox_rfdetr.cpp"),
                     str(ROOT / "tests/cpp/harness.cpp"), "-o", str(out)], check=True)
     return out

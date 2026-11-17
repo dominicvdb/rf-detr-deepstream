@@ -2,7 +2,7 @@
 # for DeepStream's header. Output (harness) is git-ignored via build/.
 CXX      ?= c++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -I.
-PARSER   := ../../src/rfdetr_deepstream/parser/nvdsparsebbox_rfdetr.cpp
+PARSER   := ../../rfdetr_deepstream/parser/nvdsparsebbox_rfdetr.cpp
 OUT      := ../../build/parser_harness/harness
 
 .PHONY: all clean

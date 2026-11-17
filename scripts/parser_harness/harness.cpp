@@ -1,4 +1,4 @@
-// Runs the real RF-DETR nvinfer parsers (src/rfdetr_deepstream/parser) on raw model outputs, without DeepStream.
+// Runs the real RF-DETR nvinfer parsers (rfdetr_deepstream/parser) on raw model outputs, without DeepStream.
 // Build (any C++17 compiler; uses the stand-in header in this folder):
 //     make -C scripts/parser_harness
 // Usage:
