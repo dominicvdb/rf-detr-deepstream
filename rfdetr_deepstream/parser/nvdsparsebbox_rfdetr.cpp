@@ -113,6 +113,8 @@ std::vector<Candidate> selectCandidates(const float* logits, unsigned int numQue
       }
       const unsigned int flatIndex = q * numClasses + c;
       const float score = sigmoid(logits[flatIndex]);
+      // Keep this filter for segmentation: nvinfer frees the masks of the objects it keeps, but not of the
+      // ones its own pre-cluster-threshold drops. Also rejects NaN scores.
       if (score > threshold) {
         candidates.push_back({score, flatIndex});
       }
@@ -137,6 +139,11 @@ Box toPixels(const float* box, float netW, float netH) {
   const float cx = box[0], cy = box[1], w = box[2], h = box[3];
   return {std::clamp((cx - w / 2) * netW, 0.0f, netW), std::clamp((cy - h / 2) * netH, 0.0f, netH),
           std::clamp((cx + w / 2) * netW, 0.0f, netW), std::clamp((cy + h / 2) * netH, 0.0f, netH)};
+}
+
+// NaN model outputs (e.g. FP16 overflow) survive the clamp; such boxes are skipped.
+bool isFinite(const Box& b) {
+  return std::isfinite(b.x1) && std::isfinite(b.y1) && std::isfinite(b.x2) && std::isfinite(b.y2);
 }
 
 // One axis of PyTorch's bilinear upsample (align_corners=False): src = (dst + 0.5) * in/out - 0.5, clamped at 0.
@@ -192,6 +199,9 @@ extern "C" bool NvDsInferParseRfdetr(std::vector<NvDsInferLayerInfo> const& outp
   for (const Candidate& cand : candidates) {
     const unsigned int q = cand.flatIndex / numClasses;
     const Box b = toPixels(boxes + q * kBoxSize, netW, netH);
+    if (!isFinite(b)) {
+      continue;
+    }
 
     NvDsInferObjectDetectionInfo obj{};
     obj.classId = cand.flatIndex % numClasses;
@@ -222,7 +232,8 @@ extern "C" bool NvDsInferParseRfdetrSeg(std::vector<NvDsInferLayerInfo> const& o
     return false;
   }
   const NvDsInferDims& maskDims = masksLayer->inferDims;
-  if (masksLayer->dataType != FLOAT || maskDims.numDims != 3 || maskDims.d[0] != numQueries) {
+  if (masksLayer->dataType != FLOAT || maskDims.numDims != 3 || maskDims.d[0] != numQueries || maskDims.d[1] == 0 ||
+      maskDims.d[2] == 0) {
     std::cerr << "RF-DETR parser: expected FLOAT masks of shape (Q, Hm, Wm) with Q=" << numQueries << ".\n";
     return false;
   }
@@ -238,6 +249,9 @@ extern "C" bool NvDsInferParseRfdetrSeg(std::vector<NvDsInferLayerInfo> const& o
   for (const Candidate& cand : candidates) {
     const unsigned int q = cand.flatIndex / numClasses;
     const Box b = toPixels(boxes + q * kBoxSize, static_cast<float>(netW), static_cast<float>(netH));
+    if (!isFinite(b)) {
+      continue;
+    }
 
     NvDsInferInstanceMaskInfo obj{};
     obj.classId = cand.flatIndex % numClasses;
