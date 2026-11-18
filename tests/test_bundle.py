@@ -10,8 +10,8 @@ import pytest
 from onnx import numpy_helper
 
 from conftest import make_detr_onnx
-from rfdetr_deepstream.bundle import (BundleError, ClassLayout, build_bundle, check_onnx, normalization_from_rfdetr,
-                                      read_onnx_interface)
+from rfdetr_deepstream.bundle import (RFDETR_VERSIONS, BundleError, ClassLayout, build_bundle, check_onnx,
+                                      check_rfdetr_version, normalization_from_rfdetr, read_onnx_interface)
 from rfdetr_deepstream.reference import IMAGENET_MEAN, IMAGENET_STD
 
 
@@ -154,3 +154,24 @@ def test_check_onnx_tasks(tmp_path):
     kp = make_detr_onnx(tmp_path / "k.onnx", classes=2, keypoints=(17, 7))
     assert check_onnx(read_onnx_interface(kp)) == ("keypoints", 2)
     assert check_onnx(read_onnx_interface(make_detr_onnx(tmp_path / "s.onnx", masks=True))) == ("segment", 3)
+
+
+@pytest.mark.parametrize("version", ["1.12.0", "1.12.1", "1.12.10rc1"])
+def test_rfdetr_version_supported(version):
+    check_rfdetr_version(version)
+
+
+@pytest.mark.parametrize("version", ["1.11.2", "1.13.0", "2.0.0"])
+def test_rfdetr_version_unsupported(version):
+    with pytest.raises(BundleError, match="needs rfdetr >=1.12,<1.13"):
+        check_rfdetr_version(version)
+
+
+def test_rfdetr_pin_matches_pyproject():
+    """The version check and the pin in pyproject.toml must agree."""
+    import re
+    from pathlib import Path
+
+    (lo, hi) = RFDETR_VERSIONS
+    pins = re.findall(r'"rfdetr\[onnx\]([^"]*)"', (Path(__file__).parents[1] / "pyproject.toml").read_text())
+    assert pins and set(pins) == {f">={lo[0]}.{lo[1]},<{hi[0]}.{hi[1]}"}
