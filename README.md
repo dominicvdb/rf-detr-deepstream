@@ -22,6 +22,10 @@ pip install -e .              # enough to build from an .onnx export
 
 The machine that builds the bundle needs no DeepStream or GPU. The target needs DeepStream (with `make` and `g++`, as in NVIDIA's DeepStream containers).
 
+**rfdetr version.** Building from a pretrained name or a checkpoint needs rfdetr 1.12.x (`>=1.12,<1.13`): the parser mirrors that version's post-processing, and the build stops with an error on any other. If another tool in your environment needs a different rfdetr (cfg-detect, for example, uses 1.11), either:
+- install rfdetr-deepstream in its own environment: `uv tool install ".[torch]"` (or `pipx install ".[torch]"`). Checkpoints trained with rfdetr 1.11 load and give identical outputs in 1.12;
+- or build from the other tool's ONNX export, which needs no rfdetr at all: `rfdetr-deepstream build model.onnx --class-names classes.txt --frame-size WxH -o bundle/`.
+
 ## Building a bundle
 
 ```bash

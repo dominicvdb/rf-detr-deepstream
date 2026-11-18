@@ -13,9 +13,11 @@ dependencies = [
 
 [project.optional-dependencies]
 # Needed to build from a pretrained name or a .pth checkpoint (exports to ONNX with rfdetr).
-torch = ["rfdetr[onnx]", "torch", "torchvision"]
+# Pinned to the rfdetr minor version the reference decoder and the C++ parser mirror (1.12.1); raise it only after
+# re-running the parity checks. RFDETR_VERSIONS in rfdetr_deepstream/bundle.py must match.
+torch = ["rfdetr[onnx]>=1.12,<1.13", "torch", "torchvision"]
 # Parity tests and development scripts.
-dev = ["rfdetr[onnx]", "torch", "torchvision", "onnxruntime", "pillow", "opencv-python-headless", "av", "pytest"]
+dev = ["rfdetr[onnx]>=1.12,<1.13", "torch", "torchvision", "onnxruntime", "pillow", "opencv-python-headless", "av", "pytest"]
 
 [project.scripts]
 rfdetr-deepstream = "rfdetr_deepstream.cli:main"

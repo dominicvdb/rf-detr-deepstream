@@ -174,7 +174,29 @@ def keypoint_layout_for_onnx(num_slots: int, keypoints_per_class: list[int] | No
 # --------------------------------------------------------------------------------------------------
 # Getting an ONNX
 # --------------------------------------------------------------------------------------------------
+# rfdetr versions this tool is checked against (the pin in pyproject.toml). Others can export a different graph or
+# lack the APIs used here (1.11 has no rfdetr.utilities.class_names).
+RFDETR_VERSIONS = ((1, 12), (1, 13))  # >= 1.12, < 1.13
+
+
+def check_rfdetr_version(version: str) -> None:
+    lo, hi = RFDETR_VERSIONS
+    parts = tuple(int(p) for p in re.findall(r"\d+", version)[:2])
+    if not lo <= parts < hi:
+        raise BundleError(
+            f"rfdetr {version} is installed, but rf-detr-deepstream needs rfdetr >={lo[0]}.{lo[1]},<{hi[0]}.{hi[1]}. "
+            "Install it in its own environment (e.g. `uv tool install` or `pipx`), or build from an .onnx export "
+            "with --class-names, which doesn't need rfdetr.")
+
+
 def load_rfdetr(model: str):
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        check_rfdetr_version(version("rfdetr"))
+    except PackageNotFoundError:
+        raise BundleError("Building from a pretrained name or a checkpoint needs rfdetr: "
+                          "pip install 'rfdetr-deepstream[torch]'. An .onnx export works without it.") from None
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)  # torch.jit deprecation notices from rfdetr's imports
         import rfdetr
